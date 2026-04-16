@@ -1,13 +1,12 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/RichardKnop/machinery/v2/config"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -20,32 +19,15 @@ type Lock struct {
 	interval time.Duration
 }
 
-func New(cnf *config.Config, addrs []string, db, retries int) Lock {
+// New creates Lock instance with an existing redis client
+func New(client redis.UniversalClient, retries int) Lock {
 	if retries <= 0 {
 		return Lock{}
 	}
-	lock := Lock{retries: retries}
-
-	var password string
-
-	parts := strings.Split(addrs[0], "@")
-	if len(parts) >= 2 {
-		password = strings.Join(parts[:len(parts)-1], "@")
-		addrs[0] = parts[len(parts)-1] // addr is the last one without @
+	return Lock{
+		rclient: client,
+		retries: retries,
 	}
-
-	ropt := &redis.UniversalOptions{
-		Addrs:    addrs,
-		DB:       db,
-		Password: password,
-	}
-	if cnf.Redis != nil {
-		ropt.MasterName = cnf.Redis.MasterName
-	}
-
-	lock.rclient = redis.NewUniversalClient(ropt)
-
-	return lock
 }
 
 func (r Lock) LockWithRetries(key string, unixTsToExpireNs int64) error {
@@ -64,7 +46,7 @@ func (r Lock) LockWithRetries(key string, unixTsToExpireNs int64) error {
 func (r Lock) Lock(key string, unixTsToExpireNs int64) error {
 	now := time.Now().UnixNano()
 	expiration := time.Duration(unixTsToExpireNs + 1 - now)
-	ctx := r.rclient.Context()
+	ctx := context.Background()
 
 	success, err := r.rclient.SetNX(ctx, key, unixTsToExpireNs, expiration).Result()
 	if err != nil {

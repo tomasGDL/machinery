@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/RichardKnop/machinery/v2/backends/redis"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/tasks"
@@ -26,7 +28,10 @@ func TestGroupCompleted(t *testing.T) {
 		GroupUUID: groupUUID,
 	}
 
-	backend := redis.New(new(config.Config), []string{redisURL}, 0)
+	client := goredis.NewClient(&goredis.Options{
+		Addr: redisURL,
+	})
+	backend := redis.New(new(config.Config), client)
 
 	// Cleanup before the test
 	backend.PurgeState(task1.UUID)
@@ -78,7 +83,10 @@ func TestGetState(t *testing.T) {
 		GroupUUID: "testGroupUUID",
 	}
 
-	backend := redis.New(new(config.Config), []string{redisURL}, 0)
+	client := goredis.NewClient(&goredis.Options{
+		Addr: redisURL,
+	})
+	backend := redis.New(new(config.Config), client)
 
 	backend.PurgeState("testTaskUUID")
 
@@ -138,7 +146,10 @@ func TestPurgeState(t *testing.T) {
 		GroupUUID: "testGroupUUID",
 	}
 
-	backend := redis.New(new(config.Config), []string{redisURL}, 0)
+	client := goredis.NewClient(&goredis.Options{
+		Addr: redisURL,
+	})
+	backend := redis.New(new(config.Config), client)
 
 	backend.SetStatePending(signature)
 	taskState, err := backend.GetState(signature.UUID)

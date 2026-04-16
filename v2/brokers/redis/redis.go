@@ -11,8 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/go-redsync/redsync/v4"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/RichardKnop/machinery/v2/brokers/errs"
 	"github.com/RichardKnop/machinery/v2/brokers/iface"
@@ -27,40 +26,21 @@ const defaultRedisDelayedTasksKey = "delayed_tasks"
 // Broker represents a Redis broker
 type Broker struct {
 	common.Broker
-	rclient      redis.UniversalClient
-	consumingWG  sync.WaitGroup // wait group to make sure whole consumption completes
-	processingWG sync.WaitGroup // use wait group to make sure task processing completes
-	delayedWG    sync.WaitGroup
-	// If set, path to a socket file overrides hostname
-	socketPath           string
-	redsync              *redsync.Redsync
-	redisOnce            sync.Once
+
+	rclient              redis.UniversalClient
+	consumingWG          sync.WaitGroup // wait group to make sure whole consumption completes
+	processingWG         sync.WaitGroup // use wait group to make sure task processing completes
+	delayedWG            sync.WaitGroup
 	redisDelayedTasksKey string
 }
 
-// New creates new Broker instance
-func New(cnf *config.Config, addrs []string, db int) iface.Broker {
-	b := &Broker{Broker: common.NewBroker(cnf)}
-
-	var password string
-	parts := strings.Split(addrs[0], "@")
-	if len(parts) >= 2 {
-		// with password
-		password = strings.Join(parts[:len(parts)-1], "@")
-		addrs[0] = parts[len(parts)-1] // addr is the last one without @
+// New creates new Broker instance with an existing redis client
+func New(cnf *config.Config, client redis.UniversalClient) iface.Broker {
+	b := &Broker{
+		Broker:  common.NewBroker(cnf),
+		rclient: client,
 	}
-
-	ropt := &redis.UniversalOptions{
-		Addrs:    addrs,
-		DB:       db,
-		Password: password,
-	}
-	if cnf.Redis != nil {
-		ropt.MasterName = cnf.Redis.MasterName
-	}
-
-	b.rclient = redis.NewUniversalClient(ropt)
-	if cnf.Redis.DelayedTasksKey != "" {
+	if cnf.Redis != nil && cnf.Redis.DelayedTasksKey != "" {
 		b.redisDelayedTasksKey = cnf.Redis.DelayedTasksKey
 	} else {
 		b.redisDelayedTasksKey = defaultRedisDelayedTasksKey
@@ -197,7 +177,7 @@ func (b *Broker) Publish(ctx context.Context, signature *tasks.Signature) error 
 
 		if signature.ETA.After(now) {
 			score := signature.ETA.UnixNano()
-			err = b.rclient.ZAdd(context.Background(), b.redisDelayedTasksKey, &redis.Z{Score: float64(score), Member: msg}).Err()
+			err = b.rclient.ZAdd(context.Background(), b.redisDelayedTasksKey, redis.Z{Score: float64(score), Member: msg}).Err()
 			return err
 		}
 	}

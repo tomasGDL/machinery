@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/go-redsync/redsync/v4"
-	redsyncgoredis "github.com/go-redsync/redsync/v4/redis/goredis/v8"
+	redsyncgoredis "github.com/go-redsync/redsync/v4/redis/goredis/v9"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/RichardKnop/machinery/v2/backends/iface"
 	"github.com/RichardKnop/machinery/v2/common"
@@ -22,38 +20,17 @@ import (
 // Backend represents a Redis result backend
 type Backend struct {
 	common.Backend
-	rclient  redis.UniversalClient
-	host     string
-	password string
-	db       int
-	// If set, path to a socket file overrides hostname
-	socketPath string
-	redsync    *redsync.Redsync
-	redisOnce  sync.Once
+
+	rclient redis.UniversalClient
+	redsync *redsync.Redsync
 }
 
-// New creates Backend instance
-func New(cnf *config.Config, addrs []string, db int) iface.Backend {
+// New creates Backend instance with an existing redis client
+func New(cnf *config.Config, client redis.UniversalClient) iface.Backend {
 	b := &Backend{
 		Backend: common.NewBackend(cnf),
+		rclient: client,
 	}
-	parts := strings.Split(addrs[0], "@")
-	if len(parts) >= 2 {
-		// with password
-		b.password = strings.Join(parts[:len(parts)-1], "@")
-		addrs[0] = parts[len(parts)-1] // addr is the last one without @
-	}
-
-	ropt := &redis.UniversalOptions{
-		Addrs:    addrs,
-		DB:       db,
-		Password: b.password,
-	}
-	if cnf.Redis != nil {
-		ropt.MasterName = cnf.Redis.MasterName
-	}
-
-	b.rclient = redis.NewUniversalClient(ropt)
 	b.redsync = redsync.New(redsyncgoredis.NewPool(b.rclient))
 	return b
 }

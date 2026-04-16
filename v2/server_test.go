@@ -88,8 +88,9 @@ func getTestServer(t *testing.T) *machinery.Server {
 			ReadTimeout: 15,
 		},
 	}
-	broker := redisbroker.New(cnf, []string{"localhost:6379"}, 0)
-	backend := redisbackend.New(cnf, []string{"localhost:6379"}, 0)
-	lock := redislock.New(cnf, []string{"localhost:6379"}, 0, 3)
+
+	broker := redisbroker.New(cnf, client)
+	backend := redisbackend.New(cnf, client)
+	lock := redislock.New(client, 3)
 	return machinery.NewServer(cnf, broker, backend, lock)
 }
