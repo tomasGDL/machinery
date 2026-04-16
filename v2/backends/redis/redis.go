@@ -2,44 +2,60 @@ package redis
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
+	redsyncgoredis "github.com/go-redsync/redsync/v4/redis/goredis/v8"
 
 	"github.com/RichardKnop/machinery/v2/backends/iface"
 	"github.com/RichardKnop/machinery/v2/common"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/tasks"
-	"github.com/go-redsync/redsync/v4"
-	redsyncredis "github.com/go-redsync/redsync/v4/redis/redigo"
-	"github.com/gomodule/redigo/redis"
 )
 
 // Backend represents a Redis result backend
 type Backend struct {
 	common.Backend
+	rclient  redis.UniversalClient
 	host     string
 	password string
 	db       int
-	pool     *redis.Pool
 	// If set, path to a socket file overrides hostname
 	socketPath string
 	redsync    *redsync.Redsync
 	redisOnce  sync.Once
-	common.RedisConnector
 }
 
 // New creates Backend instance
-func New(cnf *config.Config, host, password, socketPath string, db int) iface.Backend {
-	return &Backend{
-		Backend:    common.NewBackend(cnf),
-		host:       host,
-		db:         db,
-		password:   password,
-		socketPath: socketPath,
+func New(cnf *config.Config, addrs []string, db int) iface.Backend {
+	b := &Backend{
+		Backend: common.NewBackend(cnf),
 	}
+	parts := strings.Split(addrs[0], "@")
+	if len(parts) >= 2 {
+		// with password
+		b.password = strings.Join(parts[:len(parts)-1], "@")
+		addrs[0] = parts[len(parts)-1] // addr is the last one without @
+	}
+
+	ropt := &redis.UniversalOptions{
+		Addrs:    addrs,
+		DB:       db,
+		Password: b.password,
+	}
+	if cnf.Redis != nil {
+		ropt.MasterName = cnf.Redis.MasterName
+	}
+
+	b.rclient = redis.NewUniversalClient(ropt)
+	b.redsync = redsync.New(redsyncgoredis.NewPool(b.rclient))
+	return b
 }
 
 // InitGroup creates and saves a group meta data object
@@ -55,11 +71,8 @@ func (b *Backend) InitGroup(groupUUID string, taskUUIDs []string) error {
 		return err
 	}
 
-	conn := b.open()
-	defer conn.Close()
-
-	expiration := int64(b.getExpiration().Seconds())
-	_, err = conn.Do("SET", groupUUID, encoded, "EX", expiration)
+	expiration := b.getExpiration()
+	err = b.rclient.Set(context.Background(), groupUUID, encoded, expiration).Err()
 	if err != nil {
 		return err
 	}
@@ -69,15 +82,12 @@ func (b *Backend) InitGroup(groupUUID string, taskUUIDs []string) error {
 
 // GroupCompleted returns true if all tasks in a group finished
 func (b *Backend) GroupCompleted(groupUUID string, groupTaskCount int) (bool, error) {
-	conn := b.open()
-	defer conn.Close()
-
-	groupMeta, err := b.getGroupMeta(conn, groupUUID)
+	groupMeta, err := b.getGroupMeta(groupUUID)
 	if err != nil {
 		return false, err
 	}
 
-	taskStates, err := b.getStates(conn, groupMeta.TaskUUIDs...)
+	taskStates, err := b.getStates(groupMeta.TaskUUIDs...)
 	if err != nil {
 		return false, err
 	}
@@ -94,15 +104,12 @@ func (b *Backend) GroupCompleted(groupUUID string, groupTaskCount int) (bool, er
 
 // GroupTaskStates returns states of all tasks in the group
 func (b *Backend) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*tasks.TaskState, error) {
-	conn := b.open()
-	defer conn.Close()
-
-	groupMeta, err := b.getGroupMeta(conn, groupUUID)
+	groupMeta, err := b.getGroupMeta(groupUUID)
 	if err != nil {
 		return []*tasks.TaskState{}, err
 	}
 
-	return b.getStates(conn, groupMeta.TaskUUIDs...)
+	return b.getStates(groupMeta.TaskUUIDs...)
 }
 
 // TriggerChord flags chord as triggered in the backend storage to make sure
@@ -110,16 +117,13 @@ func (b *Backend) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*task
 // whether the worker should trigger chord (true) or no if it has been triggered
 // already (false)
 func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
-	conn := b.open()
-	defer conn.Close()
-
 	m := b.redsync.NewMutex("TriggerChordMutex")
 	if err := m.Lock(); err != nil {
 		return false, err
 	}
 	defer m.Unlock()
 
-	groupMeta, err := b.getGroupMeta(conn, groupUUID)
+	groupMeta, err := b.getGroupMeta(groupUUID)
 	if err != nil {
 		return false, err
 	}
@@ -138,8 +142,8 @@ func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
 		return false, err
 	}
 
-	expiration := int64(b.getExpiration().Seconds())
-	_, err = conn.Do("SET", groupUUID, encoded, "EX", expiration)
+	expiration := b.getExpiration()
+	err = b.rclient.Set(context.Background(), groupUUID, encoded, expiration).Err()
 	if err != nil {
 		return false, err
 	}
@@ -147,8 +151,8 @@ func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
 	return true, nil
 }
 
-func (b *Backend) mergeNewTaskState(conn redis.Conn, newState *tasks.TaskState) {
-	state, err := b.getState(conn, newState.TaskUUID)
+func (b *Backend) mergeNewTaskState(newState *tasks.TaskState) {
+	state, err := b.GetState(newState.TaskUUID)
 	if err == nil {
 		newState.CreatedAt = state.CreatedAt
 		newState.TaskName = state.TaskName
@@ -157,73 +161,49 @@ func (b *Backend) mergeNewTaskState(conn redis.Conn, newState *tasks.TaskState) 
 
 // SetStatePending updates task state to PENDING
 func (b *Backend) SetStatePending(signature *tasks.Signature) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewPendingTaskState(signature)
-	return b.updateState(conn, taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateReceived updates task state to RECEIVED
 func (b *Backend) SetStateReceived(signature *tasks.Signature) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewReceivedTaskState(signature)
-	b.mergeNewTaskState(conn, taskState)
-	return b.updateState(conn, taskState)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateStarted updates task state to STARTED
 func (b *Backend) SetStateStarted(signature *tasks.Signature) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewStartedTaskState(signature)
-	b.mergeNewTaskState(conn, taskState)
-	return b.updateState(conn, taskState)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateRetry updates task state to RETRY
 func (b *Backend) SetStateRetry(signature *tasks.Signature) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewRetryTaskState(signature)
-	b.mergeNewTaskState(conn, taskState)
-	return b.updateState(conn, taskState)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateSuccess updates task state to SUCCESS
 func (b *Backend) SetStateSuccess(signature *tasks.Signature, results []*tasks.TaskResult) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewSuccessTaskState(signature, results)
-	b.mergeNewTaskState(conn, taskState)
-	return b.updateState(conn, taskState)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // SetStateFailure updates task state to FAILURE
 func (b *Backend) SetStateFailure(signature *tasks.Signature, err string) error {
-	conn := b.open()
-	defer conn.Close()
-
 	taskState := tasks.NewFailureTaskState(signature, err)
-	b.mergeNewTaskState(conn, taskState)
-	return b.updateState(conn, taskState)
+	b.mergeNewTaskState(taskState)
+	return b.updateState(taskState)
 }
 
 // GetState returns the latest task state
 func (b *Backend) GetState(taskUUID string) (*tasks.TaskState, error) {
-	conn := b.open()
-	defer conn.Close()
 
-	return b.getState(conn, taskUUID)
-}
-
-func (b *Backend) getState(conn redis.Conn, taskUUID string) (*tasks.TaskState, error) {
-	item, err := redis.Bytes(conn.Do("GET", taskUUID))
+	item, err := b.rclient.Get(context.Background(), taskUUID).Bytes()
 	if err != nil {
 		return nil, err
 	}
@@ -239,10 +219,7 @@ func (b *Backend) getState(conn redis.Conn, taskUUID string) (*tasks.TaskState, 
 
 // PurgeState deletes stored task state
 func (b *Backend) PurgeState(taskUUID string) error {
-	conn := b.open()
-	defer conn.Close()
-
-	_, err := conn.Do("DEL", taskUUID)
+	err := b.rclient.Del(context.Background(), taskUUID).Err()
 	if err != nil {
 		return err
 	}
@@ -252,10 +229,7 @@ func (b *Backend) PurgeState(taskUUID string) error {
 
 // PurgeGroupMeta deletes stored group meta data
 func (b *Backend) PurgeGroupMeta(groupUUID string) error {
-	conn := b.open()
-	defer conn.Close()
-
-	_, err := conn.Do("DEL", groupUUID)
+	err := b.rclient.Del(context.Background(), groupUUID).Err()
 	if err != nil {
 		return err
 	}
@@ -264,9 +238,8 @@ func (b *Backend) PurgeGroupMeta(groupUUID string) error {
 }
 
 // getGroupMeta retrieves group meta data, convenience function to avoid repetition
-func (b *Backend) getGroupMeta(conn redis.Conn, groupUUID string) (*tasks.GroupMeta, error) {
-
-	item, err := redis.Bytes(conn.Do("GET", groupUUID))
+func (b *Backend) getGroupMeta(groupUUID string) (*tasks.GroupMeta, error) {
+	item, err := b.rclient.Get(context.Background(), groupUUID).Bytes()
 	if err != nil {
 		return nil, err
 	}
@@ -282,34 +255,30 @@ func (b *Backend) getGroupMeta(conn redis.Conn, groupUUID string) (*tasks.GroupM
 }
 
 // getStates returns multiple task states
-func (b *Backend) getStates(conn redis.Conn, taskUUIDs ...string) ([]*tasks.TaskState, error) {
+func (b *Backend) getStates(taskUUIDs ...string) ([]*tasks.TaskState, error) {
 	taskStates := make([]*tasks.TaskState, len(taskUUIDs))
-
-	// conn.Do requires []interface{}... can't pass []string unfortunately
-	taskUUIDInterfaces := make([]interface{}, len(taskUUIDs))
-	for i, taskUUID := range taskUUIDs {
-		taskUUIDInterfaces[i] = interface{}(taskUUID)
-	}
-
-	reply, err := redis.Values(conn.Do("MGET", taskUUIDInterfaces...))
+	// to avoid CROSSSLOT error, use pipeline
+	cmders, err := b.rclient.Pipelined(context.Background(), func(pipeliner redis.Pipeliner) error {
+		for _, uuid := range taskUUIDs {
+			pipeliner.Get(context.Background(), uuid)
+		}
+		return nil
+	})
 	if err != nil {
 		return taskStates, err
 	}
-
-	for i, value := range reply {
-		stateBytes, ok := value.([]byte)
-		if !ok {
-			return taskStates, fmt.Errorf("Expected byte array, instead got: %v", value)
+	for i, cmder := range cmders {
+		stateBytes, err1 := cmder.(*redis.StringCmd).Bytes()
+		if err1 != nil {
+			return taskStates, err1
 		}
-
 		taskState := new(tasks.TaskState)
 		decoder := json.NewDecoder(bytes.NewReader(stateBytes))
 		decoder.UseNumber()
-		if err := decoder.Decode(taskState); err != nil {
-			log.ERROR.Print(err)
-			return taskStates, err
+		if err1 = decoder.Decode(taskState); err1 != nil {
+			log.ERROR.Print(err1)
+			return taskStates, err1
 		}
-
 		taskStates[i] = taskState
 	}
 
@@ -317,14 +286,14 @@ func (b *Backend) getStates(conn redis.Conn, taskUUIDs ...string) ([]*tasks.Task
 }
 
 // updateState saves current task state
-func (b *Backend) updateState(conn redis.Conn, taskState *tasks.TaskState) error {
+func (b *Backend) updateState(taskState *tasks.TaskState) error {
 	encoded, err := json.Marshal(taskState)
 	if err != nil {
 		return err
 	}
 
-	expiration := int64(b.getExpiration().Seconds())
-	_, err = conn.Do("SET", taskState.TaskUUID, encoded, "EX", expiration)
+	expiration := b.getExpiration()
+	_, err = b.rclient.Set(context.Background(), taskState.TaskUUID, encoded, expiration).Result()
 	if err != nil {
 		return err
 	}
@@ -341,13 +310,4 @@ func (b *Backend) getExpiration() time.Duration {
 	}
 
 	return time.Duration(expiresIn) * time.Second
-}
-
-// open returns or creates instance of Redis connection
-func (b *Backend) open() redis.Conn {
-	b.redisOnce.Do(func() {
-		b.pool = b.NewPool(b.socketPath, b.host, b.password, b.db, b.GetConfig().Redis, b.GetConfig().TLSConfig)
-		b.redsync = redsync.New(redsyncredis.NewPool(b.pool))
-	})
-	return b.pool.Get()
 }
