@@ -293,26 +293,6 @@ func MyTask() error {
 }
 ```
 
-## 使用 Factories（简化创建）
-
-```go
-import "github.com/RichardKnop/machinery/v2"
-
-func main() {
-    cnf := &config.Config{
-        Broker:        "redis://localhost:6379",
-        ResultBackend: "redis://localhost:6379",
-        Lock:          "redis://localhost:6379",
-    }
-
-    broker, _ := machinery.BrokerFactory(cnf)
-    backend, _ := machinery.BackendFactory(cnf)
-    lock, _ := machinery.LockFactory(cnf)
-
-    server := machinery.NewServer(cnf, broker, backend, lock)
-}
-```
-
 ## 示例代码
 
 查看 `example/` 目录获取更多示例：
