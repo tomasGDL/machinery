@@ -2,11 +2,13 @@ package machinery_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/RichardKnop/machinery/v2"
 	"github.com/RichardKnop/machinery/v2/config"
+	"github.com/redis/go-redis/v9"
 
 	redisbackend "github.com/RichardKnop/machinery/v2/backends/redis"
 	redisbroker "github.com/RichardKnop/machinery/v2/brokers/redis"
@@ -89,8 +91,15 @@ func getTestServer(t *testing.T) *machinery.Server {
 		},
 	}
 
+	ropt := &redis.UniversalOptions{
+		Addrs: []string{"localhost:6379"},
+		DB:    0,
+	}
+
+	client := redis.NewUniversalClient(ropt)
+
 	broker := redisbroker.New(cnf, client)
 	backend := redisbackend.New(cnf, client)
-	lock := redislock.New(client, 3)
+	lock := redislock.New(client, 3, 100*time.Millisecond)
 	return machinery.NewServer(cnf, broker, backend, lock)
 }

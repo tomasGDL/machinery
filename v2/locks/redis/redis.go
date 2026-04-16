@@ -20,13 +20,17 @@ type Lock struct {
 }
 
 // New creates Lock instance with an existing redis client
-func New(client redis.UniversalClient, retries int) Lock {
+func New(client redis.UniversalClient, retries int, interval time.Duration) Lock {
 	if retries <= 0 {
 		return Lock{}
 	}
+	if interval <= 0 {
+		interval = 100 * time.Millisecond // default interval
+	}
 	return Lock{
-		rclient: client,
-		retries: retries,
+		rclient:  client,
+		retries:  retries,
+		interval: interval,
 	}
 }
 
@@ -34,7 +38,7 @@ func (r Lock) LockWithRetries(key string, unixTsToExpireNs int64) error {
 	for i := 0; i <= r.retries; i++ {
 		err := r.Lock(key, unixTsToExpireNs)
 		if err == nil {
-			//成功拿到锁，返回
+			// Lock acquired successfully
 			return nil
 		}
 

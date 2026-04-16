@@ -17,8 +17,8 @@ import (
 	"github.com/RichardKnop/machinery/v2/tasks"
 )
 
-// Backend represents a Redis result backend
-type Backend struct {
+// BackendGR represents a Redis result backend
+type BackendGR struct {
 	common.Backend
 
 	rclient redis.UniversalClient
@@ -27,7 +27,7 @@ type Backend struct {
 
 // New creates Backend instance with an existing redis client
 func New(cnf *config.Config, client redis.UniversalClient) iface.Backend {
-	b := &Backend{
+	b := &BackendGR{
 		Backend: common.NewBackend(cnf),
 		rclient: client,
 	}
@@ -36,7 +36,7 @@ func New(cnf *config.Config, client redis.UniversalClient) iface.Backend {
 }
 
 // InitGroup creates and saves a group meta data object
-func (b *Backend) InitGroup(groupUUID string, taskUUIDs []string) error {
+func (b *BackendGR) InitGroup(groupUUID string, taskUUIDs []string) error {
 	groupMeta := &tasks.GroupMeta{
 		GroupUUID: groupUUID,
 		TaskUUIDs: taskUUIDs,
@@ -49,16 +49,11 @@ func (b *Backend) InitGroup(groupUUID string, taskUUIDs []string) error {
 	}
 
 	expiration := b.getExpiration()
-	err = b.rclient.Set(context.Background(), groupUUID, encoded, expiration).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return b.rclient.Set(context.Background(), groupUUID, encoded, expiration).Err()
 }
 
 // GroupCompleted returns true if all tasks in a group finished
-func (b *Backend) GroupCompleted(groupUUID string, groupTaskCount int) (bool, error) {
+func (b *BackendGR) GroupCompleted(groupUUID string, groupTaskCount int) (bool, error) {
 	groupMeta, err := b.getGroupMeta(groupUUID)
 	if err != nil {
 		return false, err
@@ -80,7 +75,7 @@ func (b *Backend) GroupCompleted(groupUUID string, groupTaskCount int) (bool, er
 }
 
 // GroupTaskStates returns states of all tasks in the group
-func (b *Backend) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*tasks.TaskState, error) {
+func (b *BackendGR) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*tasks.TaskState, error) {
 	groupMeta, err := b.getGroupMeta(groupUUID)
 	if err != nil {
 		return []*tasks.TaskState{}, err
@@ -93,7 +88,7 @@ func (b *Backend) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*task
 // chord is never trigerred multiple times. Returns a boolean flag to indicate
 // whether the worker should trigger chord (true) or no if it has been triggered
 // already (false)
-func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
+func (b *BackendGR) TriggerChord(groupUUID string) (bool, error) {
 	m := b.redsync.NewMutex("TriggerChordMutex")
 	if err := m.Lock(); err != nil {
 		return false, err
@@ -128,7 +123,7 @@ func (b *Backend) TriggerChord(groupUUID string) (bool, error) {
 	return true, nil
 }
 
-func (b *Backend) mergeNewTaskState(newState *tasks.TaskState) {
+func (b *BackendGR) mergeNewTaskState(newState *tasks.TaskState) {
 	state, err := b.GetState(newState.TaskUUID)
 	if err == nil {
 		newState.CreatedAt = state.CreatedAt
@@ -137,48 +132,48 @@ func (b *Backend) mergeNewTaskState(newState *tasks.TaskState) {
 }
 
 // SetStatePending updates task state to PENDING
-func (b *Backend) SetStatePending(signature *tasks.Signature) error {
+func (b *BackendGR) SetStatePending(signature *tasks.Signature) error {
 	taskState := tasks.NewPendingTaskState(signature)
 	return b.updateState(taskState)
 }
 
 // SetStateReceived updates task state to RECEIVED
-func (b *Backend) SetStateReceived(signature *tasks.Signature) error {
+func (b *BackendGR) SetStateReceived(signature *tasks.Signature) error {
 	taskState := tasks.NewReceivedTaskState(signature)
 	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateStarted updates task state to STARTED
-func (b *Backend) SetStateStarted(signature *tasks.Signature) error {
+func (b *BackendGR) SetStateStarted(signature *tasks.Signature) error {
 	taskState := tasks.NewStartedTaskState(signature)
 	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateRetry updates task state to RETRY
-func (b *Backend) SetStateRetry(signature *tasks.Signature) error {
+func (b *BackendGR) SetStateRetry(signature *tasks.Signature) error {
 	taskState := tasks.NewRetryTaskState(signature)
 	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateSuccess updates task state to SUCCESS
-func (b *Backend) SetStateSuccess(signature *tasks.Signature, results []*tasks.TaskResult) error {
+func (b *BackendGR) SetStateSuccess(signature *tasks.Signature, results []*tasks.TaskResult) error {
 	taskState := tasks.NewSuccessTaskState(signature, results)
 	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // SetStateFailure updates task state to FAILURE
-func (b *Backend) SetStateFailure(signature *tasks.Signature, err string) error {
+func (b *BackendGR) SetStateFailure(signature *tasks.Signature, err string) error {
 	taskState := tasks.NewFailureTaskState(signature, err)
 	b.mergeNewTaskState(taskState)
 	return b.updateState(taskState)
 }
 
 // GetState returns the latest task state
-func (b *Backend) GetState(taskUUID string) (*tasks.TaskState, error) {
+func (b *BackendGR) GetState(taskUUID string) (*tasks.TaskState, error) {
 
 	item, err := b.rclient.Get(context.Background(), taskUUID).Bytes()
 	if err != nil {
@@ -195,27 +190,17 @@ func (b *Backend) GetState(taskUUID string) (*tasks.TaskState, error) {
 }
 
 // PurgeState deletes stored task state
-func (b *Backend) PurgeState(taskUUID string) error {
-	err := b.rclient.Del(context.Background(), taskUUID).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
+func (b *BackendGR) PurgeState(taskUUID string) error {
+	return b.rclient.Del(context.Background(), taskUUID).Err()
 }
 
 // PurgeGroupMeta deletes stored group meta data
-func (b *Backend) PurgeGroupMeta(groupUUID string) error {
-	err := b.rclient.Del(context.Background(), groupUUID).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
+func (b *BackendGR) PurgeGroupMeta(groupUUID string) error {
+	return b.rclient.Del(context.Background(), groupUUID).Err()
 }
 
 // getGroupMeta retrieves group meta data, convenience function to avoid repetition
-func (b *Backend) getGroupMeta(groupUUID string) (*tasks.GroupMeta, error) {
+func (b *BackendGR) getGroupMeta(groupUUID string) (*tasks.GroupMeta, error) {
 	item, err := b.rclient.Get(context.Background(), groupUUID).Bytes()
 	if err != nil {
 		return nil, err
@@ -232,7 +217,7 @@ func (b *Backend) getGroupMeta(groupUUID string) (*tasks.GroupMeta, error) {
 }
 
 // getStates returns multiple task states
-func (b *Backend) getStates(taskUUIDs ...string) ([]*tasks.TaskState, error) {
+func (b *BackendGR) getStates(taskUUIDs ...string) ([]*tasks.TaskState, error) {
 	taskStates := make([]*tasks.TaskState, len(taskUUIDs))
 	// to avoid CROSSSLOT error, use pipeline
 	cmders, err := b.rclient.Pipelined(context.Background(), func(pipeliner redis.Pipeliner) error {
@@ -263,7 +248,7 @@ func (b *Backend) getStates(taskUUIDs ...string) ([]*tasks.TaskState, error) {
 }
 
 // updateState saves current task state
-func (b *Backend) updateState(taskState *tasks.TaskState) error {
+func (b *BackendGR) updateState(taskState *tasks.TaskState) error {
 	encoded, err := json.Marshal(taskState)
 	if err != nil {
 		return err
@@ -271,15 +256,11 @@ func (b *Backend) updateState(taskState *tasks.TaskState) error {
 
 	expiration := b.getExpiration()
 	_, err = b.rclient.Set(context.Background(), taskState.TaskUUID, encoded, expiration).Result()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 // getExpiration returns expiration for a stored task state
-func (b *Backend) getExpiration() time.Duration {
+func (b *BackendGR) getExpiration() time.Duration {
 	expiresIn := b.GetConfig().ResultsExpireIn
 	if expiresIn == 0 {
 		// expire results after 1 hour by default

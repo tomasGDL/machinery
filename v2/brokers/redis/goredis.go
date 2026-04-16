@@ -23,8 +23,8 @@ import (
 
 const defaultRedisDelayedTasksKey = "delayed_tasks"
 
-// Broker represents a Redis broker
-type Broker struct {
+// BrokerGR represents a Redis broker
+type BrokerGR struct {
 	common.Broker
 
 	rclient              redis.UniversalClient
@@ -36,7 +36,7 @@ type Broker struct {
 
 // New creates new Broker instance with an existing redis client
 func New(cnf *config.Config, client redis.UniversalClient) iface.Broker {
-	b := &Broker{
+	b := &BrokerGR{
 		Broker:  common.NewBroker(cnf),
 		rclient: client,
 	}
@@ -49,7 +49,7 @@ func New(cnf *config.Config, client redis.UniversalClient) iface.Broker {
 }
 
 // StartConsuming enters a loop and waits for incoming messages
-func (b *Broker) StartConsuming(consumerTag string, concurrency int, taskProcessor iface.TaskProcessor) (bool, error) {
+func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProcessor iface.TaskProcessor) (bool, error) {
 	b.consumingWG.Add(1)
 	defer b.consumingWG.Done()
 
@@ -97,7 +97,7 @@ func (b *Broker) StartConsuming(consumerTag string, concurrency int, taskProcess
 				close(deliveries)
 				return
 			case <-pool:
-				task, _ := b.nextTask(getQueue(b.GetConfig(), taskProcessor))
+				task, _ := b.nextTask(getQueueGR(b.GetConfig(), taskProcessor))
 				//TODO: should this error be ignored?
 				if len(task) > 0 {
 					deliveries <- task
@@ -150,18 +150,18 @@ func (b *Broker) StartConsuming(consumerTag string, concurrency int, taskProcess
 }
 
 // StopConsuming quits the loop
-func (b *Broker) StopConsuming() {
+func (b *BrokerGR) StopConsuming() {
 	b.Broker.StopConsuming()
 	// Waiting for the delayed tasks goroutine to have stopped
 	b.delayedWG.Wait()
 	// Waiting for consumption to finish
 	b.consumingWG.Wait()
-
-	b.rclient.Close()
+	// Note: We don't close the redis client here because it may be shared
+	// The caller is responsible for managing the client lifecycle
 }
 
 // Publish places a new message on the default queue
-func (b *Broker) Publish(ctx context.Context, signature *tasks.Signature) error {
+func (b *BrokerGR) Publish(ctx context.Context, signature *tasks.Signature) error {
 	// Adjust routing key (this decides which queue the message will be published to)
 	b.Broker.AdjustRoutingKey(signature)
 
@@ -187,7 +187,7 @@ func (b *Broker) Publish(ctx context.Context, signature *tasks.Signature) error 
 }
 
 // GetPendingTasks returns a slice of task signatures waiting in the queue
-func (b *Broker) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
+func (b *BrokerGR) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
 
 	if queue == "" {
 		queue = b.GetConfig().DefaultQueue
@@ -211,7 +211,7 @@ func (b *Broker) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
 }
 
 // GetDelayedTasks returns a slice of task signatures that are scheduled, but not yet in the queue
-func (b *Broker) GetDelayedTasks() ([]*tasks.Signature, error) {
+func (b *BrokerGR) GetDelayedTasks() ([]*tasks.Signature, error) {
 	results, err := b.rclient.ZRange(context.Background(), b.redisDelayedTasksKey, 0, -1).Result()
 	if err != nil {
 		return nil, err
@@ -232,7 +232,7 @@ func (b *Broker) GetDelayedTasks() ([]*tasks.Signature, error) {
 
 // consume takes delivered messages from the channel and manages a worker pool
 // to process tasks concurrently
-func (b *Broker) consume(deliveries <-chan []byte, concurrency int, taskProcessor iface.TaskProcessor) error {
+func (b *BrokerGR) consume(deliveries <-chan []byte, concurrency int, taskProcessor iface.TaskProcessor) error {
 	errorsChan := make(chan error, concurrency*2)
 	pool := make(chan struct{}, concurrency)
 
@@ -277,7 +277,7 @@ func (b *Broker) consume(deliveries <-chan []byte, concurrency int, taskProcesso
 }
 
 // consumeOne processes a single message using TaskProcessor
-func (b *Broker) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor) error {
+func (b *BrokerGR) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor) error {
 	signature := new(tasks.Signature)
 	decoder := json.NewDecoder(bytes.NewReader(delivery))
 	decoder.UseNumber()
@@ -293,7 +293,7 @@ func (b *Broker) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor) 
 		}
 		log.INFO.Printf("Task not registered with this worker. Requeuing message: %s", delivery)
 
-		b.rclient.RPush(context.Background(), getQueue(b.GetConfig(), taskProcessor), delivery)
+		b.rclient.RPush(context.Background(), getQueueGR(b.GetConfig(), taskProcessor), delivery)
 		return nil
 	}
 
@@ -303,7 +303,7 @@ func (b *Broker) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor) 
 }
 
 // nextTask pops next available task from the default queue
-func (b *Broker) nextTask(queue string) (result []byte, err error) {
+func (b *BrokerGR) nextTask(queue string) (result []byte, err error) {
 
 	pollPeriodMilliseconds := 1000 // default poll period for normal tasks
 	if b.GetConfig().Redis != nil {
@@ -331,7 +331,17 @@ func (b *Broker) nextTask(queue string) (result []byte, err error) {
 }
 
 // nextDelayedTask pops a value from the ZSET key using WATCH/MULTI/EXEC commands.
-func (b *Broker) nextDelayedTask(key string) (result []byte, err error) {
+func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
+
+	//pipe := b.rclient.Pipeline()
+	//
+	//defer func() {
+	//	// Return connection to normal state on error.
+	//	// https://redis.io/commands/discard
+	//	if err != nil {
+	//		pipe.Discard()
+	//	}
+	//}()
 
 	var (
 		items []string
@@ -388,7 +398,7 @@ func (b *Broker) nextDelayedTask(key string) (result []byte, err error) {
 	return
 }
 
-func getQueue(config *config.Config, taskProcessor iface.TaskProcessor) string {
+func getQueueGR(config *config.Config, taskProcessor iface.TaskProcessor) string {
 	customQueue := taskProcessor.CustomQueue()
 	if customQueue == "" {
 		return config.DefaultQueue

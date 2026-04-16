@@ -6,12 +6,10 @@
 
 Machinery is an asynchronous task queue/job queue based on distributed message passing.
 
-[![Travis Status for RichardKnop/machinery](https://travis-ci.org/RichardKnop/machinery.svg?branch=master&label=linux+build)](https://travis-ci.org/RichardKnop/machinery)
 [![godoc for RichardKnop/machinery](https://godoc.org/github.com/nathany/looper?status.svg)](http://godoc.org/github.com/RichardKnop/machinery/v1)
 [![codecov for RichardKnop/machinery](https://codecov.io/gh/RichardKnop/machinery/branch/master/graph/badge.svg)](https://codecov.io/gh/RichardKnop/machinery)
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/RichardKnop/machinery)](https://goreportcard.com/report/github.com/RichardKnop/machinery)
-[![GolangCI](https://golangci.com/badges/github.com/RichardKnop/machinery.svg)](https://golangci.com)
 [![OpenTracing Badge](https://img.shields.io/badge/OpenTracing-enabled-blue.svg)](http://opentracing.io)
 
 [![Sourcegraph for RichardKnop/machinery](https://sourcegraph.com/github.com/RichardKnop/machinery/-/badge.svg)](https://sourcegraph.com/github.com/RichardKnop/machinery?badge)
@@ -57,11 +55,9 @@ Machinery is an asynchronous task queue/job queue based on distributed message p
   * [Dependencies](#dependencies)
   * [Testing](#testing)
 
-### V2 Experiment
+### V2
 
-Please be advised that V2 is work in progress and breaking changes can and will happen until it is ready.
-
-You can use the current V2 in order to avoid having to import all dependencies for brokers and backends you are not using.
+I recommend using V2 in order to avoid having to import all dependencies for brokers and backends you are not using.
 
 Instead of factory, you will need to inject broker and backend objects to the server constructor:
 
@@ -82,31 +78,21 @@ server := machinery.NewServer(cnf, broker, backend, lock)
 
 ### First Steps
 
-Add the Machinery library to your $GOPATH/src:
-
-```sh
-go get github.com/RichardKnop/machinery/v1
-```
-
-Or to get experimental v2 release:
+To install recommended v2 release:
 
 ```sh
 go get github.com/RichardKnop/machinery/v2
 ```
 
-First, you will need to define some tasks. Look at sample tasks in `example/tasks/tasks.go` to see a few examples.
-
-Second, you will need to launch a worker process with one of these commands (v2 is recommended since it doesn't import dependencies for all brokers / backends, only those you actually need):
+If you want to use legacy v1 version, you still can:
 
 ```sh
-go run example/amqp/main.go worker
-go run example/redis/main.go worker
-
-go run example/amqp/main.go worker
-go run example/redis/main.go worker
+go get github.com/RichardKnop/machinery
 ```
 
-You can also try v2 examples.
+First, you will need to define some tasks. Look at sample tasks in `v2/example/tasks/tasks.go` to see a few examples.
+
+Second, you will need to launch a worker process with one of these commands (v2 is recommended since it doesn't import dependencies for all brokers / backends, only those you actually need):
 
 ```sh
 cd v2/
@@ -123,12 +109,10 @@ go run example/redis/main.go worker
 Finally, once you have a worker running and waiting for tasks to consume, send some tasks with one of these commands (v2 is recommended since it doesn't import dependencies for all brokers / backends, only those you actually need):
 
 ```sh
-go run example/v2/amqp/main.go send
-go run example/v2/redigo/main.go send // Redis with redigo driver
-go run example/v2/go-redis/main.go send // Redis with Go Redis driver
-
-go run example/v1/amqp/main.go send
-go run example/v1/redis/main.go send
+cd v2
+go run v2/example/amqp/main.go send
+go run v2/example/redigo/main.go send // Redis with redigo driver
+go run v2/example/go-redis/main.go send // Redis with Go Redis driver
 ```
 
 You will be able to see the tasks being processed asynchronously by the worker:
@@ -137,7 +121,7 @@ You will be able to see the tasks being processed asynchronously by the worker:
 
 ### Configuration
 
-The [config](/v1/config/config.go) package has convenience methods for loading configuration from environment variables or a YAML file. For example, load configuration from environment variables:
+The [config](/v2/config/config.go) package has convenience methods for loading configuration from environment variables or a YAML file. For example, load configuration from environment variables:
 
 ```go
 cnf, err := config.NewFromEnvironment()
@@ -285,8 +269,8 @@ For example:
 
 1. `redis://localhost:6379`, or with password `redis://password@localhost:6379`
 2. `redis+socket://password@/path/to/file.sock:/0`
-3. cluster `redis://host1:port1,host2:port2,host3:port3`
-4. cluster with password `redis://pass@host1:port1,host2:port2,host3:port3`
+3. cluster/sentinel `redis://host1:port1,host2:port2,host3:port3/0`
+4. cluster/sentinel with password `redis://pass@host1:port1,host2:port2,host3:port3/0`
 
 ##### Memcache
 
@@ -343,6 +327,7 @@ RabbitMQ related configuration. Not necessary if you are using other broker/back
 * `QueueBindingArguments`: an optional map of additional arguments used when binding to an AMQP queue
 * `BindingKey`: The queue is bind to the exchange with this key, e.g. `machinery_task`
 * `PrefetchCount`: How many tasks to prefetch (set to `1` if you have long running tasks)
+* `DelayedQueue`: delayed queue name to be used for task retry or delayed task (if empty it will follow auto create and delate delayed queues)
 
 #### DynamoDB
 
