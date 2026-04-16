@@ -1,9 +1,8 @@
 package config
 
 import (
-	"github.com/kelseyhightower/envconfig"
-
 	"github.com/RichardKnop/machinery/v2/log"
+	"github.com/kelseyhightower/envconfig"
 )
 
 // NewFromEnvironment creates a config object from environment variables
@@ -19,18 +18,11 @@ func NewFromEnvironment() (*Config, error) {
 }
 
 func fromEnvironment() (*Config, error) {
-	loadedCnf, cnf := new(Config), new(Config)
+	cnf := new(Config)
 	*cnf = *defaultCnf
 
 	if err := envconfig.Process("", cnf); err != nil {
 		return nil, err
-	}
-	if err := envconfig.Process("", loadedCnf); err != nil {
-		return nil, err
-	}
-
-	if loadedCnf.AMQP == nil {
-		cnf.AMQP = nil
 	}
 
 	return cnf, nil

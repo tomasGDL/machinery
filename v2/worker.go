@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"github.com/opentracing/opentracing-go"
-	
-	"github.com/RichardKnop/machinery/v2/backends/amqp"
+
 	"github.com/RichardKnop/machinery/v2/brokers/errs"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/retry"
@@ -63,12 +62,10 @@ func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 		log.INFO.Printf("- CustomQueue: %s", worker.Queue)
 	}
 	log.INFO.Printf("- ResultBackend: %s", RedactURL(cnf.ResultBackend))
-	if cnf.AMQP != nil {
-		log.INFO.Printf("- AMQP: %s", cnf.AMQP.Exchange)
-		log.INFO.Printf("  - Exchange: %s", cnf.AMQP.Exchange)
-		log.INFO.Printf("  - ExchangeType: %s", cnf.AMQP.ExchangeType)
-		log.INFO.Printf("  - BindingKey: %s", cnf.AMQP.BindingKey)
-		log.INFO.Printf("  - PrefetchCount: %d", cnf.AMQP.PrefetchCount)
+	if cnf.Redis != nil {
+		log.INFO.Printf("- Redis: localhost:6379")
+		log.INFO.Printf("  - MaxIdle: %d", cnf.Redis.MaxIdle)
+		log.INFO.Printf("  - NormalTasksPollPeriod: %d", cnf.Redis.NormalTasksPollPeriod)
 	}
 
 	var signalWG sync.WaitGroup
@@ -302,7 +299,11 @@ func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*t
 
 	// Defer purging of group meta queue if we are using AMQP backend
 	if worker.hasAMQPBackend() {
-		defer worker.server.GetBackend().PurgeGroupMeta(signature.GroupUUID)
+		defer func() {
+			if err := worker.server.GetBackend().PurgeGroupMeta(signature.GroupUUID); err != nil {
+				log.ERROR.Printf("Failed to purge group meta for group %s: %s", signature.GroupUUID, err)
+			}
+		}()
 	}
 
 	// Trigger chord callback
@@ -390,8 +391,7 @@ func (worker *Worker) taskFailed(signature *tasks.Signature, taskErr error) erro
 
 // Returns true if the worker uses AMQP backend
 func (worker *Worker) hasAMQPBackend() bool {
-	_, ok := worker.server.GetBackend().(*amqp.Backend)
-	return ok
+	return worker.server.GetBackend().IsAMQP()
 }
 
 // SetErrorHandler sets a custom error handler for task errors

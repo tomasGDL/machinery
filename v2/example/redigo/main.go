@@ -19,7 +19,7 @@ import (
 	redisbroker "github.com/RichardKnop/machinery/v2/brokers/redis"
 	exampletasks "github.com/RichardKnop/machinery/v2/example/tasks"
 	"github.com/RichardKnop/machinery/v2/example/tracers"
-	eagerlock "github.com/RichardKnop/machinery/v2/locks/eager"
+	redislock "github.com/RichardKnop/machinery/v2/locks/redis"
 	"github.com/opentracing/opentracing-go"
 	opentracinglog "github.com/opentracing/opentracing-go/log"
 )
@@ -83,7 +83,7 @@ func startServer() (*machinery.Server, error) {
 	// Create server instance
 	broker := redisbroker.New(cnf, "localhost:6379", "", "", 0)
 	backend := redisbackend.New(cnf, "localhost:6379", "", "", 0)
-	lock := eagerlock.New()
+	lock := redislock.New(cnf, []string{"localhost:6379"}, 0, 3)
 	server := machinery.NewServer(cnf, broker, backend, lock)
 
 	// Register tasks

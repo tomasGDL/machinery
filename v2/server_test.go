@@ -8,9 +8,9 @@ import (
 	"github.com/RichardKnop/machinery/v2"
 	"github.com/RichardKnop/machinery/v2/config"
 
-	backend "github.com/RichardKnop/machinery/v2/backends/eager"
-	broker "github.com/RichardKnop/machinery/v2/brokers/eager"
-	lock "github.com/RichardKnop/machinery/v2/locks/eager"
+	redisbackend "github.com/RichardKnop/machinery/v2/backends/redis"
+	redisbroker "github.com/RichardKnop/machinery/v2/brokers/redis"
+	redislock "github.com/RichardKnop/machinery/v2/locks/redis"
 )
 
 func TestRegisterTasks(t *testing.T) {
@@ -78,5 +78,18 @@ func TestNewCustomQueueWorker(t *testing.T) {
 }
 
 func getTestServer(t *testing.T) *machinery.Server {
-	return machinery.NewServer(&config.Config{}, broker.New(), backend.New(), lock.New())
+	cnf := &config.Config{
+		Broker:        "redis://localhost:6379",
+		ResultBackend: "redis://localhost:6379",
+		Lock:          "redis://localhost:6379",
+		Redis: &config.RedisConfig{
+			MaxIdle:     3,
+			IdleTimeout: 240,
+			ReadTimeout: 15,
+		},
+	}
+	broker := redisbroker.New(cnf, "localhost:6379", "", "", 0)
+	backend := redisbackend.New(cnf, "localhost:6379", "", "", 0)
+	lock := redislock.New(cnf, []string{"localhost:6379"}, 0, 3)
+	return machinery.NewServer(cnf, broker, backend, lock)
 }

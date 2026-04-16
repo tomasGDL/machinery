@@ -4,9 +4,8 @@ import (
 	"crypto/tls"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
-
 	"github.com/RichardKnop/machinery/v2/config"
+	"github.com/gomodule/redigo/redis"
 )
 
 var (
