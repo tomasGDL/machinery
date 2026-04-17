@@ -55,18 +55,12 @@ func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 
 	// Log some useful information about worker configuration
 	log.INFO.Printf("Launching a worker with the following settings:")
-	log.INFO.Printf("- Broker: %s", RedactURL(cnf.Broker))
 	if worker.Queue == "" {
 		log.INFO.Printf("- DefaultQueue: %s", cnf.DefaultQueue)
 	} else {
 		log.INFO.Printf("- CustomQueue: %s", worker.Queue)
 	}
-	log.INFO.Printf("- ResultBackend: %s", RedactURL(cnf.ResultBackend))
-	if cnf.Redis != nil {
-		log.INFO.Printf("- Redis: localhost:6379")
-		log.INFO.Printf("  - MaxIdle: %d", cnf.Redis.MaxIdle)
-		log.INFO.Printf("  - NormalTasksPollPeriod: %d", cnf.Redis.NormalTasksPollPeriod)
-	}
+	log.INFO.Printf("- Redis Addrs: %v", cnf.Addrs)
 
 	var signalWG sync.WaitGroup
 	// Goroutine to start broker consumption and handle retries when broker connection dies

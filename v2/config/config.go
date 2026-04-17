@@ -1,100 +1,64 @@
 package config
 
 import (
-	"crypto/tls"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
-const (
-	// DefaultResultsExpireIn is a default time used to expire task states and group metadata from the backend
-	DefaultResultsExpireIn = 3600
-)
-
-var (
-	// Start with sensible default values
-	defaultCnf = &Config{
-		Broker:          "redis://localhost:6379",
-		DefaultQueue:    "machinery_tasks",
-		ResultBackend:   "redis://localhost:6379",
-		ResultsExpireIn: DefaultResultsExpireIn,
-		Redis: &RedisConfig{
-			MaxIdle:                3,
-			IdleTimeout:            240,
-			ReadTimeout:            15,
-			WriteTimeout:           15,
-			ConnectTimeout:         15,
-			NormalTasksPollPeriod:  1000,
-			DelayedTasksPollPeriod: 500,
-		},
-	}
-
-	reloadDelay = time.Second * 10
-)
-
-// Config holds all configuration for our program
+// Config holds all configuration for Machinery
 type Config struct {
-	Broker                  string       `yaml:"broker" envconfig:"BROKER"`
-	Lock                    string       `yaml:"lock" envconfig:"LOCK"`
-	MultipleBrokerSeparator string       `yaml:"multiple_broker_separator" envconfig:"MULTIPLE_BROKEN_SEPARATOR"`
-	DefaultQueue            string       `yaml:"default_queue" envconfig:"DEFAULT_QUEUE"`
-	ResultBackend           string       `yaml:"result_backend" envconfig:"RESULT_BACKEND"`
-	ResultsExpireIn         int          `yaml:"results_expire_in" envconfig:"RESULTS_EXPIRE_IN"`
-	Redis                   *RedisConfig `yaml:"redis"`
-	TLSConfig               *tls.Config
-	// NoUnixSignals - when set disables signal handling in machinery
-	NoUnixSignals bool `yaml:"no_unix_signals" envconfig:"NO_UNIX_SIGNALS"`
+	// UniversalOptions contains redis connection options
+	// Supports single node, sentinel and cluster modes
+	redis.UniversalOptions
+
+	// DefaultQueue is the default queue name for tasks
+	// Default: "default"
+	DefaultQueue string
+
+	// ResultsExpireIn is the time in seconds for task states and group metadata to expire from the backend
+	// Default: 3600 (1 hour)
+	ResultsExpireIn int
+
+	// TaskPrefix is the prefix for auto-generated task UUIDs
+	// Default: "task_"
+	TaskPrefix string
+
+	// DefaultMaxRetry is the default maximum number of retries for failed tasks
+	// Default: 3
+	DefaultMaxRetry int
+
+	// NoUnixSignals when set disables signal handling in machinery
+	// Default: false
+	NoUnixSignals bool
+
+	// NormalTasksPollPeriod specifies the period for polling redis for normal tasks
+	// Default: 1s
+	NormalTasksPollPeriod time.Duration
+
+	// DelayedTasksPollPeriod specifies the period for polling redis for delayed tasks
+	// Default: 500ms
+	DelayedTasksPollPeriod time.Duration
+
+	// DelayedTasksKey is the redis key used to store delayed tasks
+	// Default: "delayed_tasks"
+	DelayedTasksKey string
 }
 
-// RedisConfig ...
-type RedisConfig struct {
-	// Maximum number of idle connections in the pool.
-	// Default: 10
-	MaxIdle int `yaml:"max_idle" envconfig:"REDIS_MAX_IDLE"`
-
-	// Maximum number of connections allocated by the pool at a given time.
-	// When zero, there is no limit on the number of connections in the pool.
-	// Default: 100
-	MaxActive int `yaml:"max_active" envconfig:"REDIS_MAX_ACTIVE"`
-
-	// Close connections after remaining idle for this duration in seconds. If the value
-	// is zero, then idle connections are not closed. Applications should set
-	// the timeout to a value less than the server's timeout.
-	// Default: 300
-	IdleTimeout int `yaml:"max_idle_timeout" envconfig:"REDIS_IDLE_TIMEOUT"`
-
-	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
-	// for a connection to be returned to the pool before returning.
-	// Default: true
-	Wait bool `yaml:"wait" envconfig:"REDIS_WAIT"`
-
-	// ReadTimeout specifies the timeout in seconds for reading a single command reply.
-	// Default: 15
-	ReadTimeout int `yaml:"read_timeout" envconfig:"REDIS_READ_TIMEOUT"`
-
-	// WriteTimeout specifies the timeout in seconds for writing a single command.
-	// Default: 15
-	WriteTimeout int `yaml:"write_timeout" envconfig:"REDIS_WRITE_TIMEOUT"`
-
-	// ConnectTimeout specifies the timeout in seconds for connecting to the Redis server when
-	// no DialNetDial option is specified.
-	// Default: 15
-	ConnectTimeout int `yaml:"connect_timeout" envconfig:"REDIS_CONNECT_TIMEOUT"`
-
-	// NormalTasksPollPeriod specifies the period in milliseconds when polling redis for normal tasks
-	// Default: 1000
-	NormalTasksPollPeriod int `yaml:"normal_tasks_poll_period" envconfig:"REDIS_NORMAL_TASKS_POLL_PERIOD"`
-
-	// DelayedTasksPollPeriod specifies the period in milliseconds when polling redis for delayed tasks
-	// Default: 20
-	DelayedTasksPollPeriod int    `yaml:"delayed_tasks_poll_period" envconfig:"REDIS_DELAYED_TASKS_POLL_PERIOD"`
-	DelayedTasksKey        string `yaml:"delayed_tasks_key" envconfig:"REDIS_DELAYED_TASKS_KEY"`
-
-	// ClientName specifies the redis client name to be set when connecting to the Redis server
-	ClientName string `yaml:"client_name" envconfig:"REDIS_CLIENT_NAME"`
-
-	// MasterName specifies a redis master name in order to configure a sentinel-backed redis FailoverClient
-	MasterName string `yaml:"master_name" envconfig:"REDIS_MASTER_NAME"`
-
-	// ClusterMode specifies if Redis is running in cluster mode
-	ClusterMode bool `yaml:"cluster_mode" envconfig:"REDIS_CLUSTER_MODE"`
+// DefaultConfig returns a Config instance with default values
+func DefaultConfig() *Config {
+	return &Config{
+		DefaultQueue:           "default",
+		ResultsExpireIn:        3600,
+		TaskPrefix:             "task_",
+		DefaultMaxRetry:        3,
+		NoUnixSignals:          false,
+		NormalTasksPollPeriod:  1 * time.Second,
+		DelayedTasksPollPeriod: 500 * time.Millisecond,
+		DelayedTasksKey:        "delayed_tasks",
+		UniversalOptions: redis.UniversalOptions{
+			Addrs: []string{"localhost:6379"},
+			DB:    0,
+		},
+	}
 }

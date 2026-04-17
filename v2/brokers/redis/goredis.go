@@ -21,8 +21,6 @@ import (
 	"github.com/RichardKnop/machinery/v2/tasks"
 )
 
-const defaultRedisDelayedTasksKey = "delayed_tasks"
-
 // BrokerGR represents a Redis broker
 type BrokerGR struct {
 	common.Broker
@@ -37,13 +35,9 @@ type BrokerGR struct {
 // New creates new Broker instance with an existing redis client
 func New(cnf *config.Config, client redis.UniversalClient) iface.Broker {
 	b := &BrokerGR{
-		Broker:  common.NewBroker(cnf),
-		rclient: client,
-	}
-	if cnf.Redis != nil && cnf.Redis.DelayedTasksKey != "" {
-		b.redisDelayedTasksKey = cnf.Redis.DelayedTasksKey
-	} else {
-		b.redisDelayedTasksKey = defaultRedisDelayedTasksKey
+		Broker:               common.NewBroker(cnf),
+		rclient:              client,
+		redisDelayedTasksKey: cnf.DelayedTasksKey,
 	}
 	return b
 }
@@ -87,7 +81,6 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 	// If the message is valid and can be unmarshaled into a proper structure
 	// we send it to the deliveries channel
 	go func() {
-
 		log.INFO.Print("[*] Waiting for messages. To exit press CTRL+C")
 
 		for {
@@ -98,7 +91,6 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 				return
 			case <-pool:
 				task, _ := b.nextTask(getQueueGR(b.GetConfig(), taskProcessor))
-				//TODO: should this error be ignored?
 				if len(task) > 0 {
 					deliveries <- task
 				}
@@ -188,7 +180,6 @@ func (b *BrokerGR) Publish(ctx context.Context, signature *tasks.Signature) erro
 
 // GetPendingTasks returns a slice of task signatures waiting in the queue
 func (b *BrokerGR) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
-
 	if queue == "" {
 		queue = b.GetConfig().DefaultQueue
 	}
@@ -304,15 +295,10 @@ func (b *BrokerGR) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor
 
 // nextTask pops next available task from the default queue
 func (b *BrokerGR) nextTask(queue string) (result []byte, err error) {
-
-	pollPeriodMilliseconds := 1000 // default poll period for normal tasks
-	if b.GetConfig().Redis != nil {
-		configuredPollPeriod := b.GetConfig().Redis.NormalTasksPollPeriod
-		if configuredPollPeriod > 0 {
-			pollPeriodMilliseconds = configuredPollPeriod
-		}
+	pollPeriod := b.GetConfig().NormalTasksPollPeriod
+	if pollPeriod <= 0 {
+		pollPeriod = 1 * time.Second
 	}
-	pollPeriod := time.Duration(pollPeriodMilliseconds) * time.Millisecond
 
 	items, err := b.rclient.BLPop(context.Background(), pollPeriod, queue).Result()
 	if err != nil {
@@ -332,37 +318,18 @@ func (b *BrokerGR) nextTask(queue string) (result []byte, err error) {
 
 // nextDelayedTask pops a value from the ZSET key using WATCH/MULTI/EXEC commands.
 func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
+	var items []string
 
-	//pipe := b.rclient.Pipeline()
-	//
-	//defer func() {
-	//	// Return connection to normal state on error.
-	//	// https://redis.io/commands/discard
-	//	if err != nil {
-	//		pipe.Discard()
-	//	}
-	//}()
-
-	var (
-		items []string
-	)
-
-	pollPeriod := 500 // default poll period for delayed tasks
-	if b.GetConfig().Redis != nil {
-		configuredPollPeriod := b.GetConfig().Redis.DelayedTasksPollPeriod
-		// the default period is 0, which bombards redis with requests, despite
-		// our intention of doing the opposite
-		if configuredPollPeriod > 0 {
-			pollPeriod = configuredPollPeriod
-		}
+	pollPeriod := b.GetConfig().DelayedTasksPollPeriod
+	if pollPeriod <= 0 {
+		pollPeriod = 500 * time.Millisecond
 	}
 
 	for {
 		// Space out queries to ZSET so we don't bombard redis
 		// server with relentless ZRANGEBYSCOREs
-		time.Sleep(time.Duration(pollPeriod) * time.Millisecond)
+		time.Sleep(pollPeriod)
 		watchFunc := func(tx *redis.Tx) error {
-
 			now := time.Now().UTC().UnixNano()
 
 			// https://redis.io/commands/zrangebyscore
@@ -390,9 +357,8 @@ func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
 
 		if err = b.rclient.Watch(context.Background(), watchFunc, key); err != nil {
 			return
-		} else {
-			break
 		}
+		break
 	}
 
 	return

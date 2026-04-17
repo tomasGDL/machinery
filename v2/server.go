@@ -8,19 +8,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/robfig/cron/v3"
 
+	backendsiface "github.com/RichardKnop/machinery/v2/backends/iface"
 	"github.com/RichardKnop/machinery/v2/backends/result"
+	brokersiface "github.com/RichardKnop/machinery/v2/brokers/iface"
 	"github.com/RichardKnop/machinery/v2/config"
+	lockiface "github.com/RichardKnop/machinery/v2/locks/iface"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/tasks"
 	"github.com/RichardKnop/machinery/v2/tracing"
 	"github.com/RichardKnop/machinery/v2/utils"
-
-	backendsiface "github.com/RichardKnop/machinery/v2/backends/iface"
-	brokersiface "github.com/RichardKnop/machinery/v2/brokers/iface"
-	lockiface "github.com/RichardKnop/machinery/v2/locks/iface"
-	opentracing "github.com/opentracing/opentracing-go"
 )
 
 // Server is the main Machinery object and stores all configuration
@@ -162,7 +161,7 @@ func (server *Server) SendTaskWithContext(ctx context.Context, signature *tasks.
 	// Auto generate a UUID if not set already
 	if signature.UUID == "" {
 		taskID := uuid.New().String()
-		signature.UUID = fmt.Sprintf("task_%v", taskID)
+		signature.UUID = fmt.Sprintf("%s%s", server.config.TaskPrefix, taskID)
 	}
 
 	// Set initial task state to PENDING

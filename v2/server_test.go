@@ -4,14 +4,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/RichardKnop/machinery/v2"
-	"github.com/RichardKnop/machinery/v2/config"
-	"github.com/redis/go-redis/v9"
-
 	redisbackend "github.com/RichardKnop/machinery/v2/backends/redis"
 	redisbroker "github.com/RichardKnop/machinery/v2/brokers/redis"
+	"github.com/RichardKnop/machinery/v2/config"
 	redislock "github.com/RichardKnop/machinery/v2/locks/redis"
 )
 
@@ -80,23 +79,11 @@ func TestNewCustomQueueWorker(t *testing.T) {
 }
 
 func getTestServer(t *testing.T) *machinery.Server {
-	cnf := &config.Config{
-		Broker:        "redis://localhost:6379",
-		ResultBackend: "redis://localhost:6379",
-		Lock:          "redis://localhost:6379",
-		Redis: &config.RedisConfig{
-			MaxIdle:     3,
-			IdleTimeout: 240,
-			ReadTimeout: 15,
-		},
-	}
+	cnf := config.DefaultConfig()
+	cnf.Addrs = []string{"localhost:6379"}
+	cnf.DB = 0
 
-	ropt := &redis.UniversalOptions{
-		Addrs: []string{"localhost:6379"},
-		DB:    0,
-	}
-
-	client := redis.NewUniversalClient(ropt)
+	client := redis.NewUniversalClient(&cnf.UniversalOptions)
 
 	broker := redisbroker.New(cnf, client)
 	backend := redisbackend.New(cnf, client)

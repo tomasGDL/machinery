@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/RichardKnop/machinery/v2/retry"
+
 	"github.com/stretchr/testify/assert"
 )
 

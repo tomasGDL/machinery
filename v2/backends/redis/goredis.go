@@ -264,7 +264,7 @@ func (b *BackendGR) getExpiration() time.Duration {
 	expiresIn := b.GetConfig().ResultsExpireIn
 	if expiresIn == 0 {
 		// expire results after 1 hour by default
-		expiresIn = config.DefaultResultsExpireIn
+		expiresIn = 3600
 	}
 
 	return time.Duration(expiresIn) * time.Second
