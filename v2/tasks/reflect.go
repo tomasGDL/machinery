@@ -52,7 +52,7 @@ var (
 	}
 )
 
-// ErrUnsupportedType ...
+// ErrUnsupportedType is returned when the type is not supported
 type ErrUnsupportedType struct {
 	valueType string
 }
@@ -347,7 +347,7 @@ func getStringValue(theType string, value interface{}) (string, error) {
 	return s, nil
 }
 
-// IsContextType checks to see if the type is a context.Context
+// IsContextType checks if the type is a context.Context
 func IsContextType(t reflect.Type) bool {
 	return t == ctxType
 }

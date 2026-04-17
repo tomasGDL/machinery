@@ -12,7 +12,7 @@ type TaskResult struct {
 	Value interface{} `bson:"value"`
 }
 
-// ReflectTaskResults ...
+// ReflectTaskResults converts []*TaskResult to []reflect.Value
 func ReflectTaskResults(taskResults []*TaskResult) ([]reflect.Value, error) {
 	resultValues := make([]reflect.Value, len(taskResults))
 	for i, taskResult := range taskResults {
@@ -25,7 +25,7 @@ func ReflectTaskResults(taskResults []*TaskResult) ([]reflect.Value, error) {
 	return resultValues, nil
 }
 
-// HumanReadableResults ...
+// HumanReadableResults formats reflect values into human readable string
 func HumanReadableResults(results []reflect.Value) string {
 	if len(results) == 1 {
 		return fmt.Sprintf("%v", results[0].Interface())

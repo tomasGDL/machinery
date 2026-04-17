@@ -6,11 +6,11 @@ import (
 )
 
 var (
-	// ErrTaskMustBeFunc ...
+	// ErrTaskMustBeFunc is returned when task is not a function
 	ErrTaskMustBeFunc = errors.New("Task must be a func type")
-	// ErrTaskReturnsNoValue ...
+	// ErrTaskReturnsNoValue is returned when task returns no value
 	ErrTaskReturnsNoValue = errors.New("Task must return at least a single value")
-	// ErrLastReturnValueMustBeError ..
+	// ErrLastReturnValueMustBeError is returned when last return value is not error
 	ErrLastReturnValueMustBeError = errors.New("Last return value of a task must be error")
 )
 

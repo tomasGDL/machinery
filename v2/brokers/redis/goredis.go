@@ -21,14 +21,31 @@ import (
 	"github.com/RichardKnop/machinery/v2/tasks"
 )
 
-// BrokerGR represents a Redis broker
+const (
+	// DefaultNormalTasksPollPeriod is the default poll period for normal tasks
+	DefaultNormalTasksPollPeriod = 1 * time.Second
+
+	// DefaultDelayedTasksPollPeriod is the default poll period for delayed tasks
+	DefaultDelayedTasksPollPeriod = 500 * time.Millisecond
+)
+
+// BrokerGR represents a Redis broker using go-redis client
 type BrokerGR struct {
 	common.Broker
 
-	rclient              redis.UniversalClient
-	consumingWG          sync.WaitGroup // wait group to make sure whole consumption completes
-	processingWG         sync.WaitGroup // use wait group to make sure task processing completes
-	delayedWG            sync.WaitGroup
+	// rclient is the Redis universal client for all Redis operations
+	rclient redis.UniversalClient
+
+	// consumingWG waits for consumption goroutines to complete
+	consumingWG sync.WaitGroup
+
+	// processingWG waits for task processing to complete
+	processingWG sync.WaitGroup
+
+	// delayedWG waits for delayed tasks goroutine to complete
+	delayedWG sync.WaitGroup
+
+	// redisDelayedTasksKey is the Redis key for delayed tasks sorted set
 	redisDelayedTasksKey string
 }
 
@@ -81,7 +98,7 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 	// If the message is valid and can be unmarshaled into a proper structure
 	// we send it to the deliveries channel
 	go func() {
-		log.INFO.Print("[*] Waiting for messages. To exit press CTRL+C")
+		log.GetLogger().Infof("[*] Waiting for messages. To exit press CTRL+C")
 
 		for {
 			select {
@@ -114,6 +131,7 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 			default:
 				task, err := b.nextDelayedTask(b.redisDelayedTasksKey)
 				if err != nil {
+					log.GetLogger().Warnf("Failed to get delayed task: %v", err)
 					continue
 				}
 
@@ -121,11 +139,11 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 				decoder := json.NewDecoder(bytes.NewReader(task))
 				decoder.UseNumber()
 				if err := decoder.Decode(signature); err != nil {
-					log.ERROR.Print(errs.NewErrCouldNotUnmarshalTaskSignature(task, err))
+					log.GetLogger().Errorf("%v", errs.NewErrCouldNotUnmarshalTaskSignature(task, err))
 				}
 
 				if err := b.Publish(context.Background(), signature); err != nil {
-					log.ERROR.Print(err)
+					log.GetLogger().Errorf("%v", err)
 				}
 			}
 		}
@@ -282,13 +300,13 @@ func (b *BrokerGR) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor
 		if signature.IgnoreWhenTaskNotRegistered {
 			return nil
 		}
-		log.INFO.Printf("Task not registered with this worker. Requeuing message: %s", delivery)
+		log.GetLogger().Infof("Task not registered with this worker. Requeuing message: %s", delivery)
 
 		b.rclient.RPush(context.Background(), getQueueGR(b.GetConfig(), taskProcessor), delivery)
 		return nil
 	}
 
-	log.DEBUG.Printf("Received new message: %s", delivery)
+	log.GetLogger().Debugf("Received new message: %s", delivery)
 
 	return taskProcessor.Process(signature)
 }
@@ -297,7 +315,7 @@ func (b *BrokerGR) consumeOne(delivery []byte, taskProcessor iface.TaskProcessor
 func (b *BrokerGR) nextTask(queue string) (result []byte, err error) {
 	pollPeriod := b.GetConfig().NormalTasksPollPeriod
 	if pollPeriod <= 0 {
-		pollPeriod = 1 * time.Second
+		pollPeriod = DefaultNormalTasksPollPeriod
 	}
 
 	items, err := b.rclient.BLPop(context.Background(), pollPeriod, queue).Result()
@@ -322,7 +340,7 @@ func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
 
 	pollPeriod := b.GetConfig().DelayedTasksPollPeriod
 	if pollPeriod <= 0 {
-		pollPeriod = 500 * time.Millisecond
+		pollPeriod = DefaultDelayedTasksPollPeriod
 	}
 
 	for {

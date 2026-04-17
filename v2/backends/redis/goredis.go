@@ -17,11 +17,19 @@ import (
 	"github.com/RichardKnop/machinery/v2/tasks"
 )
 
-// BackendGR represents a Redis result backend
+const (
+	// DefaultResultsExpireIn is the default expiration time for task results in seconds
+	DefaultResultsExpireIn = 3600
+)
+
+// BackendGR represents a Redis result backend using go-redis client
 type BackendGR struct {
 	common.Backend
 
+	// rclient is the Redis universal client for all Redis operations
 	rclient redis.UniversalClient
+
+	// redsync is the distributed lock client for chord triggering
 	redsync *redsync.Redsync
 }
 
@@ -238,7 +246,7 @@ func (b *BackendGR) getStates(taskUUIDs ...string) ([]*tasks.TaskState, error) {
 		decoder := json.NewDecoder(bytes.NewReader(stateBytes))
 		decoder.UseNumber()
 		if err1 = decoder.Decode(taskState); err1 != nil {
-			log.ERROR.Print(err1)
+			log.GetLogger().Errorf("%v", err1)
 			return taskStates, err1
 		}
 		taskStates[i] = taskState
@@ -259,13 +267,11 @@ func (b *BackendGR) updateState(taskState *tasks.TaskState) error {
 	return err
 }
 
-// getExpiration returns expiration for a stored task state
+// getExpiration returns expiration duration for a stored task state
 func (b *BackendGR) getExpiration() time.Duration {
 	expiresIn := b.GetConfig().ResultsExpireIn
-	if expiresIn == 0 {
-		// expire results after 1 hour by default
-		expiresIn = 3600
+	if expiresIn <= 0 {
+		expiresIn = DefaultResultsExpireIn
 	}
-
 	return time.Duration(expiresIn) * time.Second
 }

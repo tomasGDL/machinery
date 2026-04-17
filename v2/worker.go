@@ -32,14 +32,14 @@ type Worker struct {
 }
 
 var (
-	// ErrWorkerQuitGracefully is return when worker quit gracefully
+	// ErrWorkerQuitGracefully is returned when worker quits gracefully
 	ErrWorkerQuitGracefully = errors.New("Worker quit gracefully")
-	// ErrWorkerQuitGracefully is return when worker quit abruptly
+	// ErrWorkerQuitAbruptly is returned when worker quits abruptly
 	ErrWorkerQuitAbruptly = errors.New("Worker quit abruptly")
 )
 
-// Launch starts a new worker process. The worker subscribes
-// to the default queue and processes incoming registered tasks
+// Launch starts a new worker process and blocks until the worker stops.
+// The worker subscribes to the default queue and processes incoming registered tasks.
 func (worker *Worker) Launch() error {
 	errorsChan := make(chan error)
 
@@ -48,19 +48,20 @@ func (worker *Worker) Launch() error {
 	return <-errorsChan
 }
 
-// LaunchAsync is a non blocking version of Launch
+// LaunchAsync starts a new worker process asynchronously.
+// It is a non-blocking version of Launch.
 func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 	cnf := worker.server.GetConfig()
 	broker := worker.server.GetBroker()
 
 	// Log some useful information about worker configuration
-	log.INFO.Printf("Launching a worker with the following settings:")
+	log.GetLogger().Infof("Launching a worker with the following settings:")
 	if worker.Queue == "" {
-		log.INFO.Printf("- DefaultQueue: %s", cnf.DefaultQueue)
+		log.GetLogger().Infof("- DefaultQueue: %s", cnf.DefaultQueue)
 	} else {
-		log.INFO.Printf("- CustomQueue: %s", worker.Queue)
+		log.GetLogger().Infof("- CustomQueue: %s", worker.Queue)
 	}
-	log.INFO.Printf("- Redis Addrs: %v", cnf.Addrs)
+	log.GetLogger().Infof("- Redis Addrs: %v", cnf.Addrs)
 
 	var signalWG sync.WaitGroup
 	// Goroutine to start broker consumption and handle retries when broker connection dies
@@ -72,7 +73,7 @@ func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 				if worker.errorHandler != nil {
 					worker.errorHandler(err)
 				} else {
-					log.WARNING.Printf("Broker failed with error: %s", err)
+					log.GetLogger().Warnf("Broker failed with error: %s", err)
 				}
 			} else {
 				signalWG.Wait()
@@ -89,12 +90,12 @@ func (worker *Worker) LaunchAsync(errorsChan chan<- error) {
 		// Goroutine Handle SIGINT and SIGTERM signals
 		go func() {
 			for s := range sig {
-				log.WARNING.Printf("Signal received: %v", s)
+				log.GetLogger().Warnf("Signal received: %v", s)
 				signalsReceived++
 
 				if signalsReceived < 2 {
 					// After first Ctrl+C start quitting the worker gracefully
-					log.WARNING.Print("Waiting for running tasks to finish before shutting down")
+					log.GetLogger().Warnf("Waiting for running tasks to finish before shutting down")
 					signalWG.Add(1)
 					go func() {
 						worker.Quit()
@@ -159,12 +160,12 @@ func (worker *Worker) Process(signature *tasks.Signature) error {
 		return fmt.Errorf("Set state to 'started' for task %s returned error: %s", signature.UUID, err)
 	}
 
-	//Run handler before the task is called
+	// Run handler before the task is called
 	if worker.preTaskHandler != nil {
 		worker.preTaskHandler(signature)
 	}
 
-	//Defer run handler for the end of the task
+	// Defer run handler for the end of the task
 	if worker.postTaskHandler != nil {
 		defer worker.postTaskHandler(signature)
 	}
@@ -208,7 +209,7 @@ func (worker *Worker) taskRetry(signature *tasks.Signature) error {
 	eta := time.Now().UTC().Add(time.Second * time.Duration(signature.RetryTimeout))
 	signature.ETA = &eta
 
-	log.WARNING.Printf("Task %s failed. Going to retry in %d seconds.", signature.UUID, signature.RetryTimeout)
+	log.GetLogger().Warnf("Task %s failed. Going to retry in %d seconds.", signature.UUID, signature.RetryTimeout)
 
 	// Send the task back to the queue
 	_, err := worker.server.SendTask(signature)
@@ -226,7 +227,7 @@ func (worker *Worker) retryTaskIn(signature *tasks.Signature, retryIn time.Durat
 	eta := time.Now().UTC().Add(retryIn)
 	signature.ETA = &eta
 
-	log.WARNING.Printf("Task %s failed. Going to retry in %.0f seconds.", signature.UUID, retryIn.Seconds())
+	log.GetLogger().Warnf("Task %s failed. Going to retry in %.0f seconds.", signature.UUID, retryIn.Seconds())
 
 	// Send the task back to the queue
 	_, err := worker.server.SendTask(signature)
@@ -245,11 +246,11 @@ func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*t
 	var debugResults = "[]"
 	results, err := tasks.ReflectTaskResults(taskResults)
 	if err != nil {
-		log.WARNING.Print(err)
+		log.GetLogger().Warnf("%v", err)
 	} else {
 		debugResults = tasks.HumanReadableResults(results)
 	}
-	log.DEBUG.Printf("Processed task %s. Results = %s", signature.UUID, debugResults)
+	log.GetLogger().Debugf("Processed task %s. Results = %s", signature.UUID, debugResults)
 
 	// Trigger success callbacks
 
@@ -308,7 +309,7 @@ func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*t
 		signature.GroupTaskCount,
 	)
 	if err != nil {
-		log.ERROR.Printf(
+		log.GetLogger().Errorf(
 			"Failed to get tasks states for group:[%s]. Task count:[%d]. The chord may not be triggered. Error:[%s]",
 			signature.GroupUUID,
 			signature.GroupTaskCount,
@@ -353,7 +354,7 @@ func (worker *Worker) taskFailed(signature *tasks.Signature, taskErr error) erro
 	if worker.errorHandler != nil {
 		worker.errorHandler(taskErr)
 	} else {
-		log.ERROR.Printf("Failed processing task %s. Error = %v", signature.UUID, taskErr)
+		log.GetLogger().Errorf("Failed processing task %s. Error = %v", signature.UUID, taskErr)
 	}
 
 	// Trigger error callbacks

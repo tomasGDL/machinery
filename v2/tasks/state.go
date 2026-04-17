@@ -40,7 +40,7 @@ type GroupMeta struct {
 	TTL            int64     `bson:"ttl,omitempty"`
 }
 
-// NewPendingTaskState ...
+// NewPendingTaskState creates a new TaskState with PENDING status
 func NewPendingTaskState(signature *Signature) *TaskState {
 	return &TaskState{
 		TaskUUID:  signature.UUID,
@@ -50,7 +50,7 @@ func NewPendingTaskState(signature *Signature) *TaskState {
 	}
 }
 
-// NewReceivedTaskState ...
+// NewReceivedTaskState creates a new TaskState with RECEIVED status
 func NewReceivedTaskState(signature *Signature) *TaskState {
 	return &TaskState{
 		TaskUUID: signature.UUID,
@@ -58,7 +58,7 @@ func NewReceivedTaskState(signature *Signature) *TaskState {
 	}
 }
 
-// NewStartedTaskState ...
+// NewStartedTaskState creates a new TaskState with STARTED status
 func NewStartedTaskState(signature *Signature) *TaskState {
 	return &TaskState{
 		TaskUUID: signature.UUID,
@@ -66,7 +66,7 @@ func NewStartedTaskState(signature *Signature) *TaskState {
 	}
 }
 
-// NewSuccessTaskState ...
+// NewSuccessTaskState creates a new TaskState with SUCCESS status
 func NewSuccessTaskState(signature *Signature, results []*TaskResult) *TaskState {
 	return &TaskState{
 		TaskUUID: signature.UUID,
@@ -75,7 +75,7 @@ func NewSuccessTaskState(signature *Signature, results []*TaskResult) *TaskState
 	}
 }
 
-// NewFailureTaskState ...
+// NewFailureTaskState creates a new TaskState with FAILURE status
 func NewFailureTaskState(signature *Signature, err string) *TaskState {
 	return &TaskState{
 		TaskUUID: signature.UUID,
@@ -84,7 +84,7 @@ func NewFailureTaskState(signature *Signature, err string) *TaskState {
 	}
 }
 
-// NewRetryTaskState ...
+// NewRetryTaskState creates a new TaskState with RETRY status
 func NewRetryTaskState(signature *Signature) *TaskState {
 	return &TaskState{
 		TaskUUID: signature.UUID,

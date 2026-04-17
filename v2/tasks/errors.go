@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// ErrRetryTaskLater ...
+// ErrRetryTaskLater represents an error that indicates the task should be retried later
 type ErrRetryTaskLater struct {
 	name, msg string
 	retryIn   time.Duration
@@ -26,7 +26,7 @@ func NewErrRetryTaskLater(msg string, retryIn time.Duration) ErrRetryTaskLater {
 	return ErrRetryTaskLater{msg: msg, retryIn: retryIn}
 }
 
-// Retriable is interface that retriable errors should implement
+// Retriable is the interface that retriable errors should implement
 type Retriable interface {
 	RetryIn() time.Duration
 }

@@ -34,7 +34,7 @@ type Server struct {
 	prePublishHandler func(*tasks.Signature)
 }
 
-// NewServer creates Server instance
+// NewServer creates a new Server instance with the given configuration and components
 func NewServer(cnf *config.Config, brokerServer brokersiface.Broker, backendServer backendsiface.Backend, lock lockiface.Lock) *Server {
 	srv := &Server{
 		config:          cnf,
@@ -51,7 +51,14 @@ func NewServer(cnf *config.Config, brokerServer brokersiface.Broker, backendServ
 	return srv
 }
 
-// NewWorker creates Worker instance
+// Stop gracefully stops the server and releases resources
+func (server *Server) Stop() {
+	if server.scheduler != nil {
+		server.scheduler.Stop()
+	}
+}
+
+// NewWorker creates a new Worker instance for processing tasks
 func (server *Server) NewWorker(consumerTag string, concurrency int) *Worker {
 	return &Worker{
 		server:      server,
@@ -61,7 +68,7 @@ func (server *Server) NewWorker(consumerTag string, concurrency int) *Worker {
 	}
 }
 
-// NewCustomQueueWorker creates Worker instance with Custom Queue
+// NewCustomQueueWorker creates a new Worker instance with a custom queue
 func (server *Server) NewCustomQueueWorker(consumerTag string, concurrency int, queue string) *Worker {
 	return &Worker{
 		server:      server,
@@ -91,7 +98,7 @@ func (server *Server) SetBackend(backend backendsiface.Backend) {
 	server.backend = backend
 }
 
-// GetConfig returns connection object
+// GetConfig returns the server configuration
 func (server *Server) GetConfig() *config.Config {
 	return server.config
 }
@@ -339,7 +346,7 @@ func (server *Server) RegisterPeriodicTask(spec, name string, signature *tasks.S
 		//send task
 		_, err = server.SendTask(tasks.CopySignature(signature))
 		if err != nil {
-			log.ERROR.Printf("periodic task failed. task name is: %s. error is %s", name, err.Error())
+			log.GetLogger().Errorf("periodic task failed. task name is: %s. error is %s", name, err.Error())
 		}
 	}
 
@@ -368,7 +375,7 @@ func (server *Server) RegisterPeriodicChain(spec, name string, signatures ...*ta
 		//send task
 		_, err = server.SendChain(chain)
 		if err != nil {
-			log.ERROR.Printf("periodic task failed. task name is: %s. error is %s", name, err.Error())
+			log.GetLogger().Errorf("periodic task failed. task name is: %s. error is %s", name, err.Error())
 		}
 	}
 
@@ -397,7 +404,7 @@ func (server *Server) RegisterPeriodicGroup(spec, name string, sendConcurrency i
 		//send task
 		_, err = server.SendGroup(group, sendConcurrency)
 		if err != nil {
-			log.ERROR.Printf("periodic task failed. task name is: %s. error is %s", name, err.Error())
+			log.GetLogger().Errorf("periodic task failed. task name is: %s. error is %s", name, err.Error())
 		}
 	}
 
@@ -427,7 +434,7 @@ func (server *Server) RegisterPeriodicChord(spec, name string, sendConcurrency i
 		//send task
 		_, err = server.SendChord(chord, sendConcurrency)
 		if err != nil {
-			log.ERROR.Printf("periodic task failed. task name is: %s. error is %s", name, err.Error())
+			log.GetLogger().Errorf("periodic task failed. task name is: %s. error is %s", name, err.Error())
 		}
 	}
 

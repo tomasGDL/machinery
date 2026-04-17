@@ -45,9 +45,7 @@ func NewChain(signatures ...*Signature) (*Chain, error) {
 	}
 
 	for i := len(signatures) - 1; i > 0; i-- {
-		if i > 0 {
-			signatures[i-1].OnSuccess = []*Signature{signatures[i]}
-		}
+		signatures[i-1].OnSuccess = []*Signature{signatures[i]}
 	}
 
 	chain := &Chain{Tasks: signatures}

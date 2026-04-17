@@ -1,13 +1,14 @@
 package iface
 
+// Lock defines the interface for distributed lock implementations
 type Lock interface {
-	//Acquire the lock with retry
-	//key: the name of the lock,
-	//value: at the nanosecond timestamp that lock needs to be released automatically
+	// LockWithRetries acquires the lock with retry mechanism
+	// key: the name of the lock
+	// value: the nanosecond timestamp when the lock should be released automatically
 	LockWithRetries(key string, value int64) error
 
-	//Acquire the lock with once
-	//key: the name of the lock,
-	//value: at the nanosecond timestamp that lock needs to be released automatically
+	// Lock acquires the lock once without retry
+	// key: the name of the lock
+	// value: the nanosecond timestamp when the lock should be released automatically
 	Lock(key string, value int64) error
 }

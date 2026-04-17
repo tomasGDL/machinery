@@ -110,12 +110,12 @@ func (b *Broker) StopConsuming() {
 	// Stop the retry closure earlier
 	select {
 	case b.retryStopChan <- 1:
-		log.WARNING.Print("Stopping retry closure.")
+		log.GetLogger().Warnf("Stopping retry closure.")
 	default:
 	}
 	// Notifying the stop channel stops consuming of messages
 	close(b.stopChan)
-	log.WARNING.Print("Stop channel")
+	log.GetLogger().Warnf("Stop channel")
 }
 
 // GetRegisteredTaskNames returns registered tasks names

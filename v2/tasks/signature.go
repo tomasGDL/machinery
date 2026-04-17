@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Arg represents a single argument passed to invocation fo a task
+// Arg represents a single argument passed to invocation of a task
 type Arg struct {
 	Name  string      `bson:"name"`
 	Type  string      `bson:"type"`
@@ -59,14 +59,10 @@ type Signature struct {
 	OnSuccess      []*Signature
 	OnError        []*Signature
 	ChordCallback  *Signature
-	//MessageGroupId for Broker, e.g. SQS
-	BrokerMessageGroupId string
-	//ReceiptHandle of SQS Message
-	SQSReceiptHandle string
 	// StopTaskDeletionOnError used with sqs when we want to send failed messages to dlq,
 	// and don't want machinery to delete from source queue
 	StopTaskDeletionOnError bool
-	// IgnoreWhenTaskNotRegistered auto removes the request when there is no handeler available
+	// IgnoreWhenTaskNotRegistered auto removes the request when there is no handler available
 	// When this is true a task with no handler will be ignored and not placed back in the queue
 	IgnoreWhenTaskNotRegistered bool
 }

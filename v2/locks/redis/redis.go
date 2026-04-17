@@ -13,19 +13,31 @@ var (
 	ErrRedisLockFailed = errors.New("redis lock: failed to acquire lock")
 )
 
+const (
+	// DefaultLockRetryInterval is the default interval between lock retries
+	DefaultLockRetryInterval = 100 * time.Millisecond
+)
+
+// Lock implements distributed lock using Redis
 type Lock struct {
-	rclient  redis.UniversalClient
-	retries  int
+	// rclient is the Redis universal client
+	rclient redis.UniversalClient
+
+	// retries is the maximum number of retry attempts
+	retries int
+
+	// interval is the wait duration between retries
 	interval time.Duration
 }
 
 // New creates Lock instance with an existing redis client
+// Returns empty Lock if retries <= 0
 func New(client redis.UniversalClient, retries int, interval time.Duration) Lock {
 	if retries <= 0 {
 		return Lock{}
 	}
 	if interval <= 0 {
-		interval = 100 * time.Millisecond // default interval
+		interval = DefaultLockRetryInterval
 	}
 	return Lock{
 		rclient:  client,
@@ -81,7 +93,9 @@ func (r Lock) Lock(key string, unixTsToExpireNs int64) error {
 			if now > int64(curTimeout) {
 				// success to acquire lock with get set
 				// set the expiration of redis key
-				r.rclient.Expire(ctx, key, expiration)
+				if err := r.rclient.Expire(ctx, key, expiration).Err(); err != nil {
+					return err
+				}
 				return nil
 			}
 
