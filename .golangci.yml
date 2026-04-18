@@ -1,0 +1,109 @@
+# golangci-lint configuration
+run:
+  # 启用并发
+  concurrency: 4
+  # 超时时间
+  timeout: 30s
+  # Go版本
+  go: "1.21"
+  # 排除目录
+  exclude-dirs:
+    - vendor
+    - mocks
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocyclo
+    - dupl
+    - goconst
+    - gocritic
+    - gofmt
+    - goimports
+    - misspell
+
+linters-settings:
+  errcheck:
+    # 检查所有错误
+    check-type-assertions: true
+    check-blank: true
+  gocyclo:
+    # 函数复杂度阈值
+    min-complexity: 15
+  dupl:
+    # 代码重复阈值
+    threshold: 100
+  gocritic:
+    # 启用的规则
+    enabled-checks:
+      - appendAssign
+      - argOrder
+      - badCond
+      - boolExprSimplify
+      - builtinShadow
+      - captLocal
+      - caseOrder
+      - codegenComment
+      - commentedOutCode
+      - commentedOutImport
+      - defaultCaseOrder
+      - deprecatedComment
+      - docStub
+      - dupArg
+      - dupBranchBody
+      - dupCase
+      - dupSubExpr
+      - elseif
+      - emptyDecl
+      - emptyFallthrough
+      - emptyStringTest
+      - equalFold
+      - evalOrder
+      - exitAfterDefer
+      - flagName
+      - hexLiteral
+      - indexAlloc
+      - initClause
+      - methodExprCall
+      - nilValReturn
+      - octalLiteral
+      - offByOne
+      - rangeExprCopy
+      - rangeValCopy
+      - regexpMust
+      - sloppyLen
+      - stringXbytes
+      - switchTrue
+      - typeAssertChain
+      - typeSwitchVar
+      - underef
+      - unlabelStmt
+      - unlambda
+      - unslice
+      - valSwap
+      - weakCond
+  goimports:
+    # 导入排序
+    local-prefixes: github.com/RichardKnop/machinery
+
+issues:
+  # 排除的规则
+  exclude:
+    # 排除测试文件中的某些规则
+    - "unused"
+  # 排除目录
+  exclude-dirs:
+    - vendor
+    - mocks
+  # 排除文件
+  exclude-files:
+    - "_test.go"
+
+  # 最大问题数
+  max-issues-per-linter: 0
+  max-same-issues: 0

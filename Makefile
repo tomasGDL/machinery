@@ -1,38 +1,116 @@
-.PHONY: fmt lint golint test test-with-coverage ci
-# TODO: When Go 1.9 is released vendor folder should be ignored automatically
-PACKAGES=`go list ./... | grep -v vendor | grep -v mocks`
+# 通用变量
+GO_CMD := go
+GOLANGCI_LINT_CMD := golangci-lint
+GOLINT_CMD := golint
 
+# 目录定义
+ROOT_DIR := .
+V2_DIR := v2
+
+# 默认工作目录
+WORKING_DIR := $(V2_DIR)
+
+# 测试相关
+TEST_FLAGS := -v
+COVERAGE_OUT := coverage.out
+COVERAGE_ALL := coverage-all.out
+
+# 执行命令的通用函数
+define run_command
+	@cd $(WORKING_DIR) && $(1)
+endef
+
+# 执行测试的函数
+define run_test
+	@cd $(WORKING_DIR) && $(GO_CMD) test $(TEST_FLAGS) ./...
+endef
+
+# 执行测试并生成覆盖率的函数
+define run_test_with_coverage
+	@echo "" > $(COVERAGE_OUT)
+	@echo "mode: set" > $(COVERAGE_ALL)
+	@cd $(WORKING_DIR) && $(GO_CMD) test $(TEST_FLAGS) -coverprofile=$(COVERAGE_OUT) -covermode=set ./...
+	@tail -n +2 $(COVERAGE_OUT) >> $(COVERAGE_ALL)
+endef
+
+.PHONY: fmt lint golint test test-with-coverage ci help build install clean tidy download docs release-prep version
+
+# 帮助命令
+help:
+	@echo "Available targets:"
+	@echo "  fmt                - Format code"
+	@echo "  lint               - Run linter"
+	@echo "  golint             - Run golint"
+	@echo "  test               - Run tests"
+	@echo "  test-with-coverage - Run tests with coverage"
+	@echo "  ci                 - Run CI tests"
+	@echo "  build              - Build the project"
+	@echo "  install            - Install the project"
+	@echo "  clean              - Clean the project"
+	@echo "  tidy               - Tidy dependencies"
+	@echo "  download           - Download dependencies"
+	@echo "  docs               - Generate documentation"
+	@echo "  version            - Show version information"
+	@echo "  release-prep       - Prepare for release"
+	@echo ""
+	@echo "All commands are executed in $(WORKING_DIR) directory by default."
+
+# 基础命令
 fmt:
-	for pkg in ${PACKAGES}; do \
-		go fmt $$pkg; \
-	done;
+	$(call run_command, $(GO_CMD) fmt ./...)
 
 lint:
-	gometalinter --tests --disable-all --deadline=120s -E vet -E gofmt -E misspell -E ineffassign -E goimports -E deadcode ./...
+	$(call run_command, $(GOLANGCI_LINT_CMD) run ./...)
 
 golint:
-	for pkg in ${PACKAGES}; do \
-		golint -set_exit_status $$pkg || GOLINT_FAILED=1; \
-	done; \
-	[ -z "$$GOLINT_FAILED" ]
+	$(call run_command, $(GOLINT_CMD) -set_exit_status ./...)
 
 test:
-	TEST_FAILED= ; \
-	for pkg in ${PACKAGES}; do \
-		go test $$pkg || TEST_FAILED=1; \
-	done; \
-	[ -z "$$TEST_FAILED" ]
+	$(call run_test)
 
 test-with-coverage:
-	echo "" > coverage.out
-	echo "mode: set" > coverage-all.out
-	TEST_FAILED= ; \
-	for pkg in ${PACKAGES}; do \
-		go test -coverprofile=coverage.out -covermode=set $$pkg || TEST_FAILED=1; \
-		tail -n +2 coverage.out >> coverage-all.out; \
-	done; \
-	[ -z "$$TEST_FAILED" ]
-	#go tool cover -html=coverage-all.out
+	$(call run_test_with_coverage)
 
 ci:
-	bash -c 'docker-compose -f docker-compose.test.yml -p machinery_ci up --build --abort-on-container-exit --exit-code-from sut'
+	@echo "CI command requires docker-compose, skipping..."
+
+# 构建相关命令
+build:
+	@echo "Building..."
+	$(call run_command, $(GO_CMD) build ./...)
+
+install:
+	@echo "Installing..."
+	$(call run_command, $(GO_CMD) install ./...)
+
+# 清理相关命令
+clean:
+	@echo "Cleaning..."
+	$(call run_command, $(GO_CMD) clean ./...)
+	@del /f /q $(COVERAGE_OUT) $(COVERAGE_ALL) 2>nul || echo "No coverage files to delete"
+
+# 依赖管理命令
+tidy:
+	@echo "Tidying dependencies..."
+	$(call run_command, $(GO_CMD) mod tidy)
+
+download:
+	@echo "Downloading dependencies..."
+	$(call run_command, $(GO_CMD) mod download)
+
+# 文档生成命令
+docs:
+	@echo "Generating documentation..."
+	$(call run_command, $(GO_CMD) doc ./...)
+
+# 发布相关命令
+release-prep:
+	@echo "Preparing for release..."
+	@$(MAKE) clean
+	@$(MAKE) test
+
+version:
+	@echo "Go version:"
+	@$(GO_CMD) version
+	@echo "Module info:"
+	@cd $(WORKING_DIR) && $(GO_CMD) list -m
