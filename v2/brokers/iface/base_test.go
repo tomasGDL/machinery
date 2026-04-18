@@ -1,10 +1,10 @@
-package common_test
+package iface_test
 
 import (
 	"testing"
 
 	"github.com/RichardKnop/machinery/v2"
-	"github.com/RichardKnop/machinery/v2/common"
+	"github.com/RichardKnop/machinery/v2/brokers/iface"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/tasks"
 	"github.com/stretchr/testify/assert"
@@ -13,7 +13,7 @@ import (
 func TestIsTaskRegistered(t *testing.T) {
 	t.Parallel()
 
-	broker := common.NewBroker(new(config.Config))
+	broker := iface.NewBaseBroker(new(config.Config))
 	broker.SetRegisteredTaskNames([]string{"foo", "bar"})
 
 	assert.True(t, broker.IsTaskRegistered("foo"))
@@ -25,12 +25,12 @@ func TestAdjustRoutingKey(t *testing.T) {
 
 	var (
 		s      *tasks.Signature
-		broker common.Broker
+		broker iface.BaseBroker
 	)
 
 	t.Run("with routing key", func(t *testing.T) {
 		s = &tasks.Signature{RoutingKey: "routing_key"}
-		broker = common.NewBroker(&config.Config{
+		broker = iface.NewBaseBroker(&config.Config{
 			DefaultQueue: "queue",
 		})
 		broker.AdjustRoutingKey(s)
@@ -39,7 +39,7 @@ func TestAdjustRoutingKey(t *testing.T) {
 
 	t.Run("without routing key", func(t *testing.T) {
 		s = new(tasks.Signature)
-		broker = common.NewBroker(&config.Config{
+		broker = iface.NewBaseBroker(&config.Config{
 			DefaultQueue: "queue",
 		})
 		broker.AdjustRoutingKey(s)
@@ -50,7 +50,7 @@ func TestAdjustRoutingKey(t *testing.T) {
 func TestGetRegisteredTaskNames(t *testing.T) {
 	t.Parallel()
 
-	broker := common.NewBroker(new(config.Config))
+	broker := iface.NewBaseBroker(new(config.Config))
 	fooTasks := []string{"foo", "bar", "baz"}
 	broker.SetRegisteredTaskNames(fooTasks)
 	assert.Equal(t, fooTasks, broker.GetRegisteredTaskNames())
@@ -60,7 +60,7 @@ func TestStopConsuming(t *testing.T) {
 	t.Parallel()
 
 	t.Run("stop consuming", func(t *testing.T) {
-		broker := common.NewBroker(&config.Config{
+		broker := iface.NewBaseBroker(&config.Config{
 			DefaultQueue: "queue",
 		})
 		broker.StartConsuming("", 1, &machinery.Worker{})

@@ -15,7 +15,6 @@ import (
 
 	"github.com/RichardKnop/machinery/v2/brokers/errs"
 	"github.com/RichardKnop/machinery/v2/brokers/iface"
-	"github.com/RichardKnop/machinery/v2/common"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/tasks"
@@ -31,7 +30,7 @@ const (
 
 // BrokerGR represents a Redis broker using go-redis client
 type BrokerGR struct {
-	common.Broker
+	iface.BaseBroker
 
 	// rclient is the Redis universal client for all Redis operations
 	rclient redis.UniversalClient
@@ -52,7 +51,7 @@ type BrokerGR struct {
 // New creates new Broker instance with an existing redis client
 func New(cnf *config.Config, client redis.UniversalClient) iface.Broker {
 	b := &BrokerGR{
-		Broker:               common.NewBroker(cnf),
+		BaseBroker:           iface.NewBaseBroker(cnf),
 		rclient:              client,
 		redisDelayedTasksKey: cnf.DelayedTasksKey,
 	}
@@ -68,7 +67,7 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 		concurrency = runtime.NumCPU() * 2
 	}
 
-	b.Broker.StartConsuming(consumerTag, concurrency, taskProcessor)
+	b.BaseBroker.StartConsuming(consumerTag, concurrency, taskProcessor)
 
 	// Ping the server to make sure connection is live
 	_, err := b.rclient.Ping(context.Background()).Result()
@@ -161,7 +160,7 @@ func (b *BrokerGR) StartConsuming(consumerTag string, concurrency int, taskProce
 
 // StopConsuming quits the loop
 func (b *BrokerGR) StopConsuming() {
-	b.Broker.StopConsuming()
+	b.BaseBroker.StopConsuming()
 	// Waiting for the delayed tasks goroutine to have stopped
 	b.delayedWG.Wait()
 	// Waiting for consumption to finish
@@ -173,7 +172,7 @@ func (b *BrokerGR) StopConsuming() {
 // Publish places a new message on the default queue
 func (b *BrokerGR) Publish(ctx context.Context, signature *tasks.Signature) error {
 	// Adjust routing key (this decides which queue the message will be published to)
-	b.Broker.AdjustRoutingKey(signature)
+	b.BaseBroker.AdjustRoutingKey(signature)
 
 	msg, err := json.Marshal(signature)
 	if err != nil {

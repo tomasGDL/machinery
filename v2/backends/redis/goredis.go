@@ -11,7 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/RichardKnop/machinery/v2/backends/iface"
-	"github.com/RichardKnop/machinery/v2/common"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/tasks"
@@ -24,7 +23,7 @@ const (
 
 // BackendGR represents a Redis result backend using go-redis client
 type BackendGR struct {
-	common.Backend
+	iface.BaseBackend
 
 	// rclient is the Redis universal client for all Redis operations
 	rclient redis.UniversalClient
@@ -36,8 +35,8 @@ type BackendGR struct {
 // New creates Backend instance with an existing redis client
 func New(cnf *config.Config, client redis.UniversalClient) iface.Backend {
 	b := &BackendGR{
-		Backend: common.NewBackend(cnf),
-		rclient: client,
+		BaseBackend: iface.NewBaseBackend(cnf),
+		rclient:     client,
 	}
 	b.redsync = redsync.New(redsyncgoredis.NewPool(b.rclient))
 	return b

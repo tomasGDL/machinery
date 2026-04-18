@@ -110,6 +110,7 @@ func (t *Task) Call() (taskResults []*TaskResult, err error) {
 		if e := recover(); e != nil {
 			switch e := e.(type) {
 			default:
+				log.GetLogger().Errorf("Invoking task caused a panic: %v", e)
 				err = ErrTaskPanicked
 			case error:
 				err = e

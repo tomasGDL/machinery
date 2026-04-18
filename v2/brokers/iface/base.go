@@ -1,10 +1,9 @@
-package common
+package iface
 
 import (
 	"errors"
 	"sync"
 
-	"github.com/RichardKnop/machinery/v2/brokers/iface"
 	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/retry"
@@ -16,8 +15,8 @@ type registeredTaskNames struct {
 	items []string
 }
 
-// Broker represents a base broker structure
-type Broker struct {
+// BaseBroker represents a base broker structure
+type BaseBroker struct {
 	cnf                 *config.Config
 	registeredTaskNames registeredTaskNames
 	retry               bool
@@ -26,9 +25,9 @@ type Broker struct {
 	stopChan            chan int
 }
 
-// NewBroker creates new Broker instance
-func NewBroker(cnf *config.Config) Broker {
-	return Broker{
+// NewBaseBroker creates new BaseBroker instance
+func NewBaseBroker(cnf *config.Config) BaseBroker {
+	return BaseBroker{
 		cnf:           cnf,
 		retry:         true,
 		stopChan:      make(chan int),
@@ -37,44 +36,44 @@ func NewBroker(cnf *config.Config) Broker {
 }
 
 // GetConfig returns config
-func (b *Broker) GetConfig() *config.Config {
+func (b *BaseBroker) GetConfig() *config.Config {
 	return b.cnf
 }
 
 // GetRetry ...
-func (b *Broker) GetRetry() bool {
+func (b *BaseBroker) GetRetry() bool {
 	return b.retry
 }
 
 // GetRetryFunc ...
-func (b *Broker) GetRetryFunc() func(chan int) {
+func (b *BaseBroker) GetRetryFunc() func(chan int) {
 	return b.retryFunc
 }
 
 // GetRetryStopChan ...
-func (b *Broker) GetRetryStopChan() chan int {
+func (b *BaseBroker) GetRetryStopChan() chan int {
 	return b.retryStopChan
 }
 
 // GetStopChan ...
-func (b *Broker) GetStopChan() chan int {
+func (b *BaseBroker) GetStopChan() chan int {
 	return b.stopChan
 }
 
 // Publish places a new message on the default queue
-func (b *Broker) Publish(signature *tasks.Signature) error {
+func (b *BaseBroker) Publish(signature *tasks.Signature) error {
 	return errors.New("Not implemented")
 }
 
 // SetRegisteredTaskNames sets registered task names
-func (b *Broker) SetRegisteredTaskNames(names []string) {
+func (b *BaseBroker) SetRegisteredTaskNames(names []string) {
 	b.registeredTaskNames.Lock()
 	defer b.registeredTaskNames.Unlock()
 	b.registeredTaskNames.items = names
 }
 
 // IsTaskRegistered returns true if the task is registered with this broker
-func (b *Broker) IsTaskRegistered(name string) bool {
+func (b *BaseBroker) IsTaskRegistered(name string) bool {
 	b.registeredTaskNames.RLock()
 	defer b.registeredTaskNames.RUnlock()
 	for _, registeredTaskName := range b.registeredTaskNames.items {
@@ -86,17 +85,17 @@ func (b *Broker) IsTaskRegistered(name string) bool {
 }
 
 // GetPendingTasks returns a slice of task.Signatures waiting in the queue
-func (b *Broker) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
+func (b *BaseBroker) GetPendingTasks(queue string) ([]*tasks.Signature, error) {
 	return nil, errors.New("Not implemented")
 }
 
 // GetDelayedTasks returns a slice of task.Signatures that are scheduled, but not yet in the queue
-func (b *Broker) GetDelayedTasks() ([]*tasks.Signature, error) {
+func (b *BaseBroker) GetDelayedTasks() ([]*tasks.Signature, error) {
 	return nil, errors.New("Not implemented")
 }
 
 // StartConsuming is a common part of StartConsuming method
-func (b *Broker) StartConsuming(consumerTag string, concurrency int, taskProcessor iface.TaskProcessor) {
+func (b *BaseBroker) StartConsuming(consumerTag string, concurrency int, taskProcessor TaskProcessor) {
 	if b.retryFunc == nil {
 		b.retryFunc = retry.Closure()
 	}
@@ -104,7 +103,7 @@ func (b *Broker) StartConsuming(consumerTag string, concurrency int, taskProcess
 }
 
 // StopConsuming is a common part of StopConsuming
-func (b *Broker) StopConsuming() {
+func (b *BaseBroker) StopConsuming() {
 	// Do not retry from now on
 	b.retry = false
 	// Stop the retry closure earlier
@@ -119,7 +118,7 @@ func (b *Broker) StopConsuming() {
 }
 
 // GetRegisteredTaskNames returns registered tasks names
-func (b *Broker) GetRegisteredTaskNames() []string {
+func (b *BaseBroker) GetRegisteredTaskNames() []string {
 	b.registeredTaskNames.RLock()
 	defer b.registeredTaskNames.RUnlock()
 	items := b.registeredTaskNames.items
@@ -130,7 +129,7 @@ func (b *Broker) GetRegisteredTaskNames() []string {
 // If the routing key is an empty string:
 // a) set it to binding key for direct exchange type
 // b) set it to default queue name
-func (b *Broker) AdjustRoutingKey(s *tasks.Signature) {
+func (b *BaseBroker) AdjustRoutingKey(s *tasks.Signature) {
 	if s.RoutingKey != "" {
 		return
 	}
