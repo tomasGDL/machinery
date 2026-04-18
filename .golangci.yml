@@ -5,7 +5,7 @@ run:
   # 超时时间
   timeout: 30s
   # Go版本
-  go: "1.21"
+  go: "1.25"
   # 排除目录
   exclude-dirs:
     - vendor
@@ -41,51 +41,27 @@ linters-settings:
   gocritic:
     # 启用的规则
     enabled-checks:
-      - appendAssign
-      - argOrder
-      - badCond
       - boolExprSimplify
       - builtinShadow
-      - captLocal
-      - caseOrder
-      - codegenComment
       - commentedOutCode
       - commentedOutImport
-      - defaultCaseOrder
-      - deprecatedComment
       - docStub
-      - dupArg
-      - dupBranchBody
-      - dupCase
-      - dupSubExpr
-      - elseif
       - emptyDecl
       - emptyFallthrough
       - emptyStringTest
       - equalFold
       - evalOrder
-      - exitAfterDefer
-      - flagName
       - hexLiteral
       - indexAlloc
       - initClause
       - methodExprCall
       - nilValReturn
       - octalLiteral
-      - offByOne
       - rangeExprCopy
       - rangeValCopy
-      - regexpMust
-      - sloppyLen
       - stringXbytes
-      - switchTrue
       - typeAssertChain
-      - typeSwitchVar
-      - underef
       - unlabelStmt
-      - unlambda
-      - unslice
-      - valSwap
       - weakCond
   goimports:
     # 导入排序

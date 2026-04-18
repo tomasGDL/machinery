@@ -15,7 +15,12 @@ var Closure = func() func(chan int) {
 	return func(stopChan chan int) {
 		if retryIn > 0 {
 			durationString := fmt.Sprintf("%vs", retryIn)
-			duration, _ := time.ParseDuration(durationString)
+			duration, err := time.ParseDuration(durationString)
+			if err != nil {
+				// 解析失败时使用默认值 1 秒
+				duration = time.Second
+				log.GetLogger().Errorf("Parse duration error: %s, using default 1s", err.Error())
+			}
 
 			log.GetLogger().Warnf("Retrying in %v seconds", retryIn)
 

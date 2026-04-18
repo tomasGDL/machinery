@@ -1,7 +1,7 @@
 # 通用变量
 GO_CMD := go
 GOLANGCI_LINT_CMD := golangci-lint
-GOLINT_CMD := golint
+# GOLINT_CMD := golint
 
 # 目录定义
 ROOT_DIR := .
@@ -40,7 +40,6 @@ help:
 	@echo "Available targets:"
 	@echo "  fmt                - Format code"
 	@echo "  lint               - Run linter"
-	@echo "  golint             - Run golint"
 	@echo "  test               - Run tests"
 	@echo "  test-with-coverage - Run tests with coverage"
 	@echo "  ci                 - Run CI tests"
@@ -61,9 +60,6 @@ fmt:
 
 lint:
 	$(call run_command, $(GOLANGCI_LINT_CMD) run ./...)
-
-golint:
-	$(call run_command, $(GOLINT_CMD) -set_exit_status ./...)
 
 test:
 	$(call run_test)
