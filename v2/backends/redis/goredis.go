@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/go-redsync/redsync/v4"
-	redsyncgoredis "github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/RichardKnop/machinery/v2/backends/iface"
@@ -19,6 +17,8 @@ import (
 const (
 	// DefaultResultsExpireIn is the default expiration time for task results in seconds
 	DefaultResultsExpireIn = 3600
+	// triggeredKeyPrefix is the prefix for chord triggered key
+	triggeredKeyPrefix = "machinery:chord_triggered:"
 )
 
 // BackendGR represents a Redis result backend using go-redis client
@@ -27,9 +27,6 @@ type BackendGR struct {
 
 	// rclient is the Redis universal client for all Redis operations
 	rclient redis.UniversalClient
-
-	// redsync is the distributed lock client for chord triggering
-	redsync *redsync.Redsync
 }
 
 // New creates Backend instance with an existing redis client
@@ -38,7 +35,6 @@ func New(cnf *config.Config, client redis.UniversalClient) iface.Backend {
 		BaseBackend: iface.NewBaseBackend(cnf),
 		rclient:     client,
 	}
-	b.redsync = redsync.New(redsyncgoredis.NewPool(b.rclient))
 	return b
 }
 
@@ -96,38 +92,20 @@ func (b *BackendGR) GroupTaskStates(groupUUID string, groupTaskCount int) ([]*ta
 // whether the worker should trigger chord (true) or no if it has been triggered
 // already (false)
 func (b *BackendGR) TriggerChord(groupUUID string) (bool, error) {
-	m := b.redsync.NewMutex("TriggerChordMutex")
-	if err := m.Lock(); err != nil {
-		return false, err
-	}
-	defer m.Unlock()
+	triggeredKey := triggeredKeyPrefix + groupUUID
 
-	groupMeta, err := b.getGroupMeta(groupUUID)
+	success, err := b.rclient.SetNX(
+		context.Background(),
+		triggeredKey,
+		"1",
+		24*time.Hour,
+	).Result()
+
 	if err != nil {
 		return false, err
 	}
 
-	// Chord has already been triggered, return false (should not trigger again)
-	if groupMeta.ChordTriggered {
-		return false, nil
-	}
-
-	// Set flag to true
-	groupMeta.ChordTriggered = true
-
-	// Update the group meta
-	encoded, err := json.Marshal(&groupMeta)
-	if err != nil {
-		return false, err
-	}
-
-	expiration := b.getExpiration()
-	err = b.rclient.Set(context.Background(), groupUUID, encoded, expiration).Err()
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
+	return success, nil
 }
 
 func (b *BackendGR) mergeNewTaskState(newState *tasks.TaskState) {

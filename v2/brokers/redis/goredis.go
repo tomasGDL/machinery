@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -333,10 +332,8 @@ func (b *BrokerGR) nextTask(queue string) (result []byte, err error) {
 	return result, nil
 }
 
-// nextDelayedTask pops a value from the ZSET key using WATCH/MULTI/EXEC commands.
+// nextDelayedTask pops a value from the ZSET key using ZPOPMIN command.
 func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
-	var items []string
-
 	pollPeriod := b.GetConfig().DelayedTasksPollPeriod
 	if pollPeriod <= 0 {
 		pollPeriod = DefaultDelayedTasksPollPeriod
@@ -344,41 +341,41 @@ func (b *BrokerGR) nextDelayedTask(key string) (result []byte, err error) {
 
 	for {
 		// Space out queries to ZSET so we don't bombard redis
-		// server with relentless ZRANGEBYSCOREs
+		// server with relentless ZPOPMINs
 		time.Sleep(pollPeriod)
-		watchFunc := func(tx *redis.Tx) error {
-			now := time.Now().UTC().UnixNano()
 
-			// https://redis.io/commands/zrangebyscore
-			ctx := context.Background()
-			items, err = tx.ZRevRangeByScore(ctx, key, &redis.ZRangeBy{
-				Min: "0", Max: strconv.FormatInt(now, 10), Offset: 0, Count: 1,
-			}).Result()
-			if err != nil {
-				return err
+		if b.GetStopChan() != nil {
+			select {
+			case <-b.GetStopChan():
+				return nil, fmt.Errorf("broker stopped")
+			default:
 			}
-			if len(items) != 1 {
-				return redis.Nil
-			}
+		}
 
-			// only return the first zrange value if there are no other changes in this key
-			// to make sure a delayed task would only be consumed once
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.ZRem(ctx, key, items[0])
-				result = []byte(items[0])
-				return nil
+		zMembers, err := b.rclient.ZPopMin(context.Background(), key, 1).Result()
+		if err != nil {
+			return nil, err
+		}
+
+		if len(zMembers) == 0 {
+			continue
+		}
+
+		msg := zMembers[0].Member.(string)
+		score := zMembers[0].Score
+
+		now := time.Now().UTC().UnixNano()
+		if int64(score) > now {
+			// Task not yet due, push it back
+			b.rclient.ZAdd(context.Background(), key, redis.Z{
+				Score:  score,
+				Member: msg,
 			})
-
-			return err
+			continue
 		}
 
-		if err = b.rclient.Watch(context.Background(), watchFunc, key); err != nil {
-			return
-		}
-		break
+		return []byte(msg), nil
 	}
-
-	return
 }
 
 func getQueueGR(config *config.Config, taskProcessor iface.TaskProcessor) string {

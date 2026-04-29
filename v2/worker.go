@@ -13,6 +13,7 @@ import (
 	"github.com/opentracing/opentracing-go"
 
 	"github.com/RichardKnop/machinery/v2/brokers/errs"
+	"github.com/RichardKnop/machinery/v2/config"
 	"github.com/RichardKnop/machinery/v2/log"
 	"github.com/RichardKnop/machinery/v2/retry"
 	"github.com/RichardKnop/machinery/v2/tasks"
@@ -353,6 +354,16 @@ func (worker *Worker) taskFailed(signature *tasks.Signature, taskErr error) erro
 	// Update task state to FAILURE
 	if err := worker.server.GetBackend().SetStateFailure(signature, taskErr.Error()); err != nil {
 		return fmt.Errorf("Set state to 'failure' for task %s returned error: %s", signature.UUID, err)
+	}
+
+	// Push to dead letter queue if DLQ is enabled and no more retries
+	if worker.server.GetDLQManager() != nil && signature.RetryCount <= 0 {
+		worker.server.GetDLQManager().Push(config.DLQEntry{
+			TaskUUID:   signature.UUID,
+			TaskName:   signature.Name,
+			Reason:     taskErr.Error(),
+			RetryCount: signature.RetryCount,
+		})
 	}
 
 	if worker.errorHandler != nil {

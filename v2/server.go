@@ -32,6 +32,15 @@ type Server struct {
 	lock              lockiface.Lock
 	scheduler         *cron.Cron
 	prePublishHandler func(*tasks.Signature)
+	dlqManager        *DLQManager
+}
+
+func (s *Server) SetDLQManager(dlq *DLQManager) {
+	s.dlqManager = dlq
+}
+
+func (s *Server) GetDLQManager() *DLQManager {
+	return s.dlqManager
 }
 
 // NewServer creates a new Server instance with the given configuration and components

@@ -43,6 +43,27 @@ type Config struct {
 	// DelayedTasksKey is the redis key used to store delayed tasks
 	// Default: "delayed_tasks"
 	DelayedTasksKey string
+
+	// DLQEnabled enables the dead letter queue for failed tasks
+	// Default: false
+	DLQEnabled bool
+
+	// DLQKey is the redis key used to store dead letter queue entries
+	// Default: "mq:deadletter:{queue_name}"
+	DLQKey string
+
+	// DLQOnPush is a callback function that is called when a task is pushed to the DLQ
+	// Can be used for alerting or logging
+	DLQOnPush func(entry DLQEntry)
+}
+
+// DLQEntry represents a dead letter queue entry
+type DLQEntry struct {
+	TaskUUID   string    `json:"uuid"`
+	TaskName   string    `json:"name"`
+	Reason     string    `json:"reason"`
+	RetryCount int       `json:"retry_count"`
+	Timestamp  time.Time `json:"timestamp"`
 }
 
 // DefaultConfig returns a Config instance with default values
