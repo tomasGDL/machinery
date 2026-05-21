@@ -55,6 +55,9 @@ type Config struct {
 	// DLQOnPush is a callback function that is called when a task is pushed to the DLQ
 	// Can be used for alerting or logging
 	DLQOnPush func(entry DLQEntry)
+
+	// Persistent 持久化配置
+	Persistent *PersistentConfig `json:"persistent" yaml:"persistent"`
 }
 
 // DLQEntry represents a dead letter queue entry
