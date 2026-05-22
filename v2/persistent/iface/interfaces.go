@@ -31,24 +31,24 @@ const (
 
 // PersistentEntry 持久化条目
 type PersistentEntry struct {
-	ID             string            `json:"id" bson:"_id"`
-	Signature      *tasks.Signature  `json:"signature" bson:"signature"`
-	TaskType       TaskType          `json:"task_type" bson:"task_type"`
-	PlanID         string            `json:"plan_id" bson:"plan_id"`
-	SubjectID      string            `json:"subject_id" bson:"subject_id"`
-	SubjectType    string            `json:"subject_type" bson:"subject_type"`
-	Priority       int               `json:"priority" bson:"priority"`
-	Queue          string            `json:"queue" bson:"queue"`
-	GroupID        string            `json:"group_id" bson:"group_id"`
-	ScheduledAt    *time.Time        `json:"scheduled_at" bson:"scheduled_at"`
-	ExpiredAt      *time.Time        `json:"expired_at" bson:"expired_at"`
-	Status         TaskStatus        `json:"status" bson:"status"`
-	ScheduledCount int               `json:"scheduled_count" bson:"scheduled_count"`
-	LastError      string            `json:"last_error" bson:"last_error"`
-	LastAttempt    *time.Time        `json:"last_attempt" bson:"last_attempt"`
-	CreatedAt      time.Time         `json:"created_at" bson:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at" bson:"updated_at"`
-	Metadata       map[string]string `json:"metadata" bson:"metadata"`
+	ID             string            `json:"id" bson:"_id"`                          // 基本属性
+	Signature      *tasks.Signature  `json:"signature" bson:"signature"`             // 基本属性: Signature
+	TaskType       TaskType          `json:"task_type" bson:"task_type"`             // 业务属性
+	PlanID         string            `json:"plan_id" bson:"plan_id"`                 // 业务属性
+	SubjectID      string            `json:"subject_id" bson:"subject_id"`           // 业务属性
+	SubjectType    string            `json:"subject_type" bson:"subject_type"`       // 业务属性
+	Priority       int               `json:"priority" bson:"priority"`               //
+	Queue          string            `json:"queue" bson:"queue"`                     //
+	GroupID        string            `json:"group_id" bson:"group_id"`               //
+	ScheduledAt    *time.Time        `json:"scheduled_at" bson:"scheduled_at"`       //
+	ExpiredAt      *time.Time        `json:"expired_at" bson:"expired_at"`           //
+	Status         TaskStatus        `json:"status" bson:"status"`                   //
+	ScheduledCount int               `json:"scheduled_count" bson:"scheduled_count"` //
+	LastError      string            `json:"last_error" bson:"last_error"`           //
+	LastAttempt    *time.Time        `json:"last_attempt" bson:"last_attempt"`       //
+	CreatedAt      time.Time         `json:"created_at" bson:"created_at"`           //
+	UpdatedAt      time.Time         `json:"updated_at" bson:"updated_at"`           //
+	Metadata       map[string]string `json:"metadata" bson:"metadata"`               //
 }
 
 // CanSchedule 检查是否可以被调度
@@ -79,14 +79,16 @@ type Persistent interface {
 	ReceiveBatch(signatures []*tasks.Signature) error
 	Flush(ctx context.Context) error
 	Start(ctx context.Context) error
-	Stop() error
+	Stop(ctx context.Context) error
+	Select(ctx context.Context) error
+	Complete(ctx context.Context, id string) error
+
 	TriggerQueue(ctx context.Context, queue string) error
 	TriggerAll(ctx context.Context) error
 	RegisterConstraint(constraint ScheduleConstraint)
 	UnregisterConstraint(name string)
 	GetStats() *PersistentStats
 	GetScheduledSignatures() []*ScheduledSignature
-	Complete(id string)
 	Fail(id string, err string)
 }
 

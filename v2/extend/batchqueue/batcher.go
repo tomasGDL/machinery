@@ -2,7 +2,6 @@ package batchqueue
 
 import (
 	"context"
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -30,7 +29,6 @@ type Batcher interface {
 	Send(ctx context.Context, msg interface{}) error
 	SendAsync(ctx context.Context, msg interface{}) (bool, error)
 	Flush(ctx context.Context) error
-	AsyncResult(ctx context.Context, id Identifier, timeout time.Duration) (Identifier, error)
 	Close()
 }
 
@@ -93,13 +91,10 @@ type batcher struct {
 	postFlushFn FlushFn
 	state       batcherBatchState
 	batcherName string
-	//	lock      sync.Mutex
+	conf        *Config
 
-	conf *Config
-
-	sendCnt      int64
-	processedCnt int64
-	spinlock     int32
+	sendCnt  int64
+	spinlock int32
 
 	ctx context.Context
 }
@@ -118,21 +113,21 @@ type Config struct {
 
 func (c *Config) GetBatchingMaxFlushDelay() time.Duration {
 	if c.BatchingMaxFlushDelay == 0 {
-		c.BatchingMaxFlushDelay = defaultBatchingMaxFlushDelay
+		return defaultBatchingMaxFlushDelay
 	}
 	return c.BatchingMaxFlushDelay
 }
 
 func (c *Config) GetMaxPendingMessages() int {
 	if c.MaxPendingMessages == 0 {
-		c.MaxPendingMessages = defaultMaxPendingMessages
+		return defaultMaxPendingMessages
 	}
 	return int(c.MaxPendingMessages)
 }
 
 func (c *Config) GetMaxBatching() uint {
 	if c.MaxBatching == 0 {
-		c.MaxBatching = defaultMaxBatching
+		return defaultMaxBatching
 	}
 	return uint(c.MaxBatching)
 }
@@ -191,7 +186,7 @@ func (p *batcher) internalSend(request *sendRequest) {
 		// The current batch is full then flush it.
 		p.internalFlushCurrentBatch()
 	}
-	p.sendCnt++
+	atomic.AddInt64(&p.sendCnt, 1)
 }
 
 func (p *batcher) internalFlushCurrentBatch() {
@@ -200,12 +195,12 @@ func (p *batcher) internalFlushCurrentBatch() {
 		return
 	}
 
-	item := pendingItem{
+	item := &pendingItem{
 		batchData:  batchData,
 		sequenceID: sequenceID,
 		callback:   []CallbackFn{},
 		status:     processInProgress}
-	p.pendingQueue.Put(&item)
+	p.pendingQueue.Put(item)
 
 	go func(item *pendingItem) {
 		iders, err := p.processFn(item.batchData)
@@ -215,9 +210,8 @@ func (p *batcher) internalFlushCurrentBatch() {
 			}
 		}
 
-		atomic.AddInt64(&p.processedCnt, int64(len(item.batchData)))
 		p.callbackReceipt(item, err)
-	}(&item)
+	}(item)
 }
 
 func (p *batcher) internalFlush(fr *flushRequest) {
@@ -260,7 +254,7 @@ func (p *batcher) internalClose(req *closeRequest) {
 func (p *batcher) callbackReceipt(item *pendingItem, err error) {
 	item.status = processIdle
 	item.err = err
-	p.sendCnt -= int64(len(item.batchData))
+	atomic.AddInt64(&p.sendCnt, -int64(len(item.batchData)))
 
 	for {
 		pi, ok := p.pendingQueue.Peek().(*pendingItem)
@@ -282,18 +276,16 @@ func (p *batcher) callbackReceipt(item *pendingItem, err error) {
 }
 
 func (p *batcher) Size() int64 {
-	return p.sendCnt - atomic.LoadInt64(&p.processedCnt)
+	return atomic.LoadInt64(&p.sendCnt)
 }
 
 func (p *batcher) Send(ctx context.Context, msg interface{}) error {
-	var err error
 	sr := &sendRequest{
 		ctx: ctx,
 		msg: msg,
 	}
-	p.internalSend(sr)
-
-	return err
+	p.eventsChan <- sr
+	return nil
 }
 
 func (p *batcher) SendAsync(ctx context.Context, msg interface{}) (bool, error) {
@@ -304,7 +296,7 @@ func (p *batcher) SendAsync(ctx context.Context, msg interface{}) (bool, error) 
 	}
 
 	// lock spin lock.
-	for atomic.CompareAndSwapInt32(&p.spinlock, 0, 1) {
+	for !atomic.CompareAndSwapInt32(&p.spinlock, 0, 1) {
 		runtime.Gosched()
 	}
 	defer atomic.StoreInt32(&p.spinlock, 0)
@@ -331,13 +323,9 @@ func (p *batcher) Flush(ctx context.Context) error {
 	return fr.err
 }
 
-func (p *batcher) AsyncResult(ctx context.Context, id Identifier, expiration time.Duration) (Identifier, error) {
-	return nil, errors.New("implement me")
-}
-
 func (p *batcher) Close() {
 	if p.state != batcherBatchReady {
-		// BatcherBench is closing
+		// Batcher is closing
 		return
 	}
 

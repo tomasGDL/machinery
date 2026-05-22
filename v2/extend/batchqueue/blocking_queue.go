@@ -26,9 +26,6 @@ type BlockingQueue interface {
 
 	// Busy return the current status of queue.
 	Busy() bool
-
-	// Iterator return an iterator for the queue.
-	Iterator() BlockingQueueIterator
 }
 
 // BlockingQueueIterator abstract a interface of block queue iterator.
@@ -47,12 +44,6 @@ type blockingQueue struct {
 	mutex      sync.Mutex
 	isNotEmpty *sync.Cond
 	isNotFull  *sync.Cond
-}
-
-type blockingQueueIterator struct {
-	bq      *blockingQueue
-	readIdx int
-	toRead  int
 }
 
 // NewBlockingQueue init block queue and returns a BlockingQueue.
@@ -74,8 +65,6 @@ func (bq *blockingQueue) Put(item interface{}) {
 	bq.mutex.Lock()
 	defer bq.mutex.Unlock()
 
-	var wasEmpty = bq.size == 0
-
 	for bq.size == bq.maxSize {
 		bq.isNotFull.Wait()
 	}
@@ -87,7 +76,8 @@ func (bq *blockingQueue) Put(item interface{}) {
 		bq.tailIdx = 0
 	}
 
-	if wasEmpty {
+	// If the queue is empty before, we need to wake up the reader.
+	if bq.size == 1 {
 		// Wake up eventual reader waiting for next item
 		bq.isNotEmpty.Signal()
 	}
@@ -161,33 +151,4 @@ func (bq *blockingQueue) Busy() bool {
 	bq.mutex.Lock()
 	defer bq.mutex.Unlock()
 	return bq.size == bq.maxSize
-}
-
-func (bq *blockingQueue) Iterator() BlockingQueueIterator {
-	bq.mutex.Lock()
-	defer bq.mutex.Unlock()
-
-	return &blockingQueueIterator{
-		bq:      bq,
-		readIdx: bq.headIdx,
-		toRead:  bq.size,
-	}
-}
-
-func (bqi *blockingQueueIterator) HasNext() bool {
-	return bqi.toRead > 0
-}
-
-func (bqi *blockingQueueIterator) Next() interface{} {
-	if bqi.toRead == 0 {
-		panic("Trying to read past the end of the iterator")
-	}
-
-	item := bqi.bq.items[bqi.readIdx]
-	bqi.toRead--
-	bqi.readIdx++
-	if bqi.readIdx == bqi.bq.maxSize {
-		bqi.readIdx = 0
-	}
-	return item
 }

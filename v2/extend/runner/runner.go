@@ -3,11 +3,18 @@ package runner
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RichardKnop/machinery/v2/extend/batchqueue"
 	"github.com/RichardKnop/machinery/v2/log"
 )
+
+type bufferedMsg struct {
+	msg   MessageContext
+	valid bool
+}
 
 type Runner struct {
 	*RunnerConfig
@@ -18,7 +25,8 @@ type Runner struct {
 	// 阻塞内存消息缓存队列
 	//	1. 缓存队列消息，提供消息peek
 	//	2. 缓冲重冲突的消息，解决对头阻塞
-	blockBuffer []MessageContext
+	blockBuffer    []bufferedMsg
+	pendingCompact int
 
 	// 操作之前的数据库批处理器
 	preBatcher batchqueue.Batcher
@@ -34,15 +42,24 @@ type Runner struct {
 	references   map[string]int
 	refFlushChan chan []batchqueue.Identifier
 
-	// 重试事件channel
-	retryChan chan retryMessage
-
-	// 用于接受外部事件通知
-	wakeEventChan chan WakeEvent
+	// 用于调度重试的定时器
+	scheduleTimer *time.Timer
 
 	// cc     *collector
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx           context.Context
+	cancel        context.CancelFunc
+	workerWg      sync.WaitGroup
+	eventLoopDone chan struct{}
+
+	// metrics Prometheus 指标采集
+	metrics *runnerMetrics
+
+	// msgBornTime 记录每条消息进入 Runner 的时间，用于计算端到端耗时
+	// key: EntryID, value: born time
+	msgBornTime map[string]time.Time
+
+	// workerProcessing 当前正在 worker 中处理的消息数
+	workerProcessing int64
 }
 
 func NewRunner(config *RunnerConfig) *Runner {
@@ -53,17 +70,17 @@ func NewRunner(config *RunnerConfig) *Runner {
 
 	runner := &Runner{
 		references:  make(map[string]int),
-		blockBuffer: make([]MessageContext, 0, config.BlockSize),
+		blockBuffer: make([]bufferedMsg, 0, config.BlockSize),
+		msgBornTime: make(map[string]time.Time),
 
-		recvChan:      make(chan MessageContext, DefaultRecvSize),
-		msgChan:       make(chan MessageContext, DefaultMsgChanSize),
-		refFlushChan:  make(chan []batchqueue.Identifier, DefaultReferenceSize),
-		retryChan:     make(chan retryMessage, DefaultMsgChanSize),
-		wakeEventChan: make(chan WakeEvent, DefaultWakeChanSize),
+		recvChan:     make(chan MessageContext, DefaultRecvSize),
+		msgChan:      make(chan MessageContext, DefaultMsgChanSize),
+		refFlushChan: make(chan []batchqueue.Identifier, DefaultReferenceSize),
 
 		RunnerConfig: config,
 		ctx:          ctx,
 		cancel:       cancel,
+		metrics:      newRunnerMetrics(config.Name),
 	}
 	if config.RecvSize > 0 {
 		runner.recvChan = make(chan MessageContext, config.RecvSize)
@@ -94,14 +111,32 @@ func (m *Runner) Start() {
 	m.runEventLoop()
 }
 
+func (m *Runner) Stop() {
+	m.cancel()
+	m.workerWg.Wait()
+	m.preBatcher.Close()
+	m.postBatcher.Close()
+	if m.eventLoopDone != nil {
+		<-m.eventLoopDone
+	}
+}
+
 func (m *Runner) runEventLoop() {
 	// 将所有的槽位都执行起来
+	m.workerWg.Add(m.Concurrency)
 	for i := 0; i < m.Concurrency; i++ {
 		go m.handleEventLoop()
 	}
 
 	log.INFO.Printf("%d %s slot start graceful.", m.Concurrency, m.Name)
-	go m.handleReceiveLoop()
+	m.eventLoopDone = make(chan struct{})
+	go func() {
+		defer close(m.eventLoopDone)
+		m.handleReceiveLoop()
+	}()
+
+	// 启动独立 goroutine 每5秒打印指标，不受主循环阻塞影响
+	go m.runMetricsTicker()
 }
 
 func (m *Runner) handleReceiveLoop() {
@@ -111,200 +146,110 @@ func (m *Runner) handleReceiveLoop() {
 		}
 	}()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	recvEventChan := make(chan struct{}, 2)
-	flushEventChan := make(chan struct{}, 2)
-	retryEventChan := make(chan struct{}, 2)
-	feedbackEventChan := make(chan struct{}, 2)
-	defer ticker.Stop()
-
-	attemptToNotify := func(notifyCh chan<- struct{}) {
-		select {
-		case notifyCh <- struct{}{}:
-		default:
-		}
-	}
-
 	for {
+		m.trySchedule()
+
 		select {
 		case <-m.ctx.Done():
 			log.INFO.Printf("%s receive loop stop graceful.", m.Name)
-		case <-ticker.C:
-			m.scheduleBlockMessage()
-			// 通知尚有消费消息
-			attemptToNotify(flushEventChan)
-			attemptToNotify(retryEventChan)
-			attemptToNotify(recvEventChan)
-
-		case <-recvEventChan:
-			emptySize := m.BlockSize - len(m.blockBuffer)
-			blockedFull := emptySize == 0
-			tryWaitTimes := 5
-			addition := 0
-			for {
-				if emptySize <= 0 {
-					break
-				}
-
-				if tryWaitTimes == 0 {
-					break
-				}
-
-				select {
-				case msg := <-m.recvChan:
-					m.blockBuffer = append(m.blockBuffer, msg)
-					emptySize--
-					addition++
-				default:
-					tryWaitTimes--
-				}
+			return
+		case msg := <-m.recvChan:
+			if len(m.blockBuffer) < m.BlockSize {
+				m.blockBuffer = append(m.blockBuffer, bufferedMsg{msg: msg, valid: true})
 			}
+			m.trySchedule()
 
-			if !blockedFull {
-				// 当worker处于饥饿时，向生产者反馈
-				attemptToNotify(feedbackEventChan)
-			}
+		case iders := <-m.refFlushChan:
+			m.doPostFlushed(iders)
 
-		case <-retryEventChan:
-			retryMsgs := []retryMessage{}
-
-			continuse := true
-			for continuse {
-				select {
-				case msg := <-m.retryChan:
-					if msg.msgCtx == nil {
-						break
-					}
-					retryMsgs = append(retryMsgs, msg)
-					log.INFO.Printf("Received retry message(%s), the current time has taken %dms to process the task.", msg.msgCtx.EntryID(), msg.msgCtx.Elapsed().Milliseconds())
-				default:
-					continuse = false
-				}
-
-				if !continuse {
-					break
-				}
-			}
-
-			retryEndIndex := 0
-			// unmark constraint labels
-			msgCtxs := []MessageContext{}
-			for index, rmsg := range retryMsgs {
-				m.unmark(false, rmsg.previous)
-				msgCtxs = append(msgCtxs, rmsg.msgCtx)
-				if rmsg.msgCtx.IsRetry() {
-					retryEndIndex = index
-				}
-			}
-
-			// 保持retry执行的原有顺序，避免因为重试引起太多的running状态的任务
-			blockBuffer := append(m.blockBuffer[:retryEndIndex], msgCtxs...)
-			blockBuffer = append(blockBuffer, m.blockBuffer[retryEndIndex:]...)
-			// 将需要重试的消息放到blockBuffer的前端
-			m.blockBuffer = blockBuffer
-
-		case <-flushEventChan:
-			select {
-			default:
-			case iders := <-m.refFlushChan:
-				m.doPostFlushed(iders)
-			}
-
-		case <-feedbackEventChan:
-			// NOTE:
-			//	1. 在缓冲区消息剩余10个以内，使用 HungerFeedbacker.5 反馈生产者
-			//	2. 在缓冲区消息为空后，反馈逻辑为退避算法，避免产生过多的反馈消息，引起消息积压
-			curBlockedSize := len(m.blockBuffer)
-			m.HungerFeedbacker(m.ctx, curBlockedSize)
-
-		case we := <-m.wakeEventChan:
-			eventSet := newStringSet()
-			eventSet.Add(string(we))
-
-			continues := true
-			for continues {
-				select {
-				case we := <-m.wakeEventChan:
-					eventSet.Add(string(we))
-				default:
-					continues = false
-				}
-
-				if !continues {
-					break
-				}
-			}
-
-			for _, we := range eventSet.Slice() {
-				switch WakeEvent(we) {
-				default:
-					attemptToNotify(flushEventChan)
-					attemptToNotify(retryEventChan)
-				case WakeFlush:
-					attemptToNotify(flushEventChan)
-				case WakeRetry:
-					attemptToNotify(retryEventChan)
-				}
-			}
+		case <-m.scheduleTimerC():
+			// 退避定时器到期，继续尝试调度
 		}
 	}
 }
 
-func (m *Runner) scheduleBlockMessage() {
-	sendMessage := func(msgCtx MessageContext) bool {
-		sended, _ := m.preBatcher.SendAsync(msgCtx.Context(), msgCtx)
-		if !sended {
-			return false
+func (m *Runner) runMetricsTicker() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.showRunnerMetrics()
 		}
+	}
+}
 
-		log.INFO.Printf("Send message(%s) to pre-batcher, the current time has taken %s to process the task.", msgCtx.EntryID(), msgCtx.Elapsed())
-		message := fmt.Sprintf("Send message to pre-batcher, the current time has taken %s to process the task.", msgCtx.Elapsed())
-		msgCtx.AppendLogs(message)
-		return true
+func (m *Runner) scheduleTimerC() <-chan time.Time {
+	if m.scheduleTimer == nil {
+		return nil
+	}
+	return m.scheduleTimer.C
+}
+
+func (m *Runner) trySchedule() {
+	if m.scheduleTimer != nil {
+		if !m.scheduleTimer.Stop() {
+			select {
+			case <-m.scheduleTimer.C:
+			default:
+			}
+		}
+		m.scheduleTimer = nil
 	}
 
-	sendedIndexes := []int{}
 	indexes := m.SelectRunables()
-
 	if len(indexes) == 0 {
 		return
 	}
 
+	sentCount := 0
 	for _, index := range indexes {
-		sended := sendMessage(m.blockBuffer[index])
-		if !sended {
+		if index >= len(m.blockBuffer) || !m.blockBuffer[index].valid {
+			continue
+		}
+		bm := m.blockBuffer[index]
+		sent, _ := m.preBatcher.SendAsync(bm.msg.Context(), bm.msg)
+		if !sent {
+			m.scheduleTimer = time.AfterFunc(DefaultScheduleBackoff, func() {})
+			m.metrics.IncScheduleRejected("batcher_full")
 			break
 		}
 
-		sendedIndexes = append(sendedIndexes, index)
-		m.mark(m.blockBuffer[index].(batchqueue.Identifier))
-	}
+		m.blockBuffer[index].valid = false
+		m.mark(bm.msg.(batchqueue.Identifier))
+		sentCount++
+		m.metrics.IncMessagesScheduled()
 
-	// restore retry buffer elements.
-	m.restoreBlockBuffer(sendedIndexes)
-}
-
-func (m *Runner) restoreBlockBuffer(indexes []int) {
-	m.blockBuffer = m.restoreBuffer(m.blockBuffer, indexes)
-}
-
-func (m *Runner) restoreBuffer(buffer []MessageContext, indexes []int) []MessageContext {
-	if len(indexes) == len(buffer) {
-		return []MessageContext{}
-	}
-
-	selected := newIntSet(indexes...)
-	newBuffer := make([]MessageContext, 0, len(buffer)-len(indexes))
-
-	for index, msg := range buffer {
-		if selected.Has(index) {
-			continue
+		// 记录调度等待耗时
+		if bornTime, ok := m.msgBornTime[bm.msg.EntryID()]; ok {
+			m.metrics.ObserveScheduleWaitDuration(time.Since(bornTime))
 		}
 
-		newBuffer = append(newBuffer, msg)
+		if m.Debug {
+			log.INFO.Printf("Send message(%s) to pre-batcher, elapsed: %s", bm.msg.EntryID(), bm.msg.Elapsed())
+		}
 	}
 
-	return newBuffer
+	m.pendingCompact += sentCount
+	if m.pendingCompact > len(m.blockBuffer)/4 {
+		m.compactBuffer()
+	}
+}
+
+func (m *Runner) compactBuffer() {
+	if m.pendingCompact == 0 {
+		return
+	}
+	newBuf := make([]bufferedMsg, 0, len(m.blockBuffer))
+	for _, bm := range m.blockBuffer {
+		if bm.valid {
+			newBuf = append(newBuf, bm)
+		}
+	}
+	m.blockBuffer = newBuf
+	m.pendingCompact = 0
 }
 
 func (m *Runner) Process(ctx context.Context, msgCtx MessageContext) error {
@@ -318,7 +263,11 @@ func (m *Runner) Process(ctx context.Context, msgCtx MessageContext) error {
 	case <-ctx.Done():
 		log.INFO.Printf("push message failed, %v", ctx.Err())
 	case m.recvChan <- msgCtx:
-		log.INFO.Printf("worker consume one message, %v", ctx)
+		m.metrics.IncMessagesReceived()
+		m.msgBornTime[msgCtx.EntryID()] = time.Now()
+		if m.Debug {
+			log.INFO.Printf("worker consume one message, %v", ctx)
+		}
 	}
 	return nil
 }
@@ -329,6 +278,7 @@ func (m *Runner) handleEventLoop() {
 			log.ERROR.Printf("An exception occurs in Runner(%s), %v", m.Name, r)
 		}
 	}()
+	defer m.workerWg.Done()
 
 	ctx, cancel := context.WithCancel(m.ctx)
 	defer cancel()
@@ -336,22 +286,19 @@ func (m *Runner) handleEventLoop() {
 	for {
 		select {
 		case <-ctx.Done():
-			log.INFO.Printf("%s slot stop graceful.", m.Name)
+			// log.DEBUG.Printf("%s slot stop graceful.", m.Name)
 			return
 		case msg := <-m.msgChan:
 			// 处理消息
+			atomic.AddInt64(&m.workerProcessing, 1)
+			start := time.Now()
 			m.ProcessFn(msg)
+			m.metrics.ObserveProcessDuration(time.Since(start))
+			m.metrics.IncMessagesProcessed()
+			atomic.AddInt64(&m.workerProcessing, -1)
 
-			previous := msg.Duplicate()
-			// 尝试对消息进行重试处理
-			if m.RetryUpdateFn(msg) {
-				m.wakeEvent(WakeRetry)
-				m.retryChan <- retryMessage{msgCtx: msg, previous: previous}
-				m.wakeEvent(WakeRetry)
-			} else {
-				// 如果消息没有进行重试，那么作失败处理
-				m.postBatcher.Send(msg.Context(), msg)
-			}
+			// 消息处理完成后，发送到 post-batcher
+			m.postBatcher.Send(msg.Context(), msg)
 		}
 	}
 }
@@ -360,7 +307,16 @@ func (m *Runner) doPostFlushed(iders []batchqueue.Identifier) {
 	for _, ider := range iders {
 		m.unmark(false, ider)
 
-		log.INFO.Printf("Remove message(%s) from reference counter.", ider.EntryID())
+		// 记录端到端耗时并清理 bornTime
+		if bornTime, ok := m.msgBornTime[ider.EntryID()]; ok {
+			m.metrics.ObserveEndToEndDuration(time.Since(bornTime))
+			delete(m.msgBornTime, ider.EntryID())
+		}
+		m.metrics.IncMessagesPostFlushed()
+
+		if m.Debug {
+			log.INFO.Printf("Remove message(%s) from reference counter.", ider.EntryID())
+		}
 
 		// callback Flush handler if exists.
 		if m.OnPostFlushFn != nil {
@@ -374,9 +330,12 @@ func (m *Runner) SelectRunables() []int {
 		indexes    = make([]int, 0)
 		references = map[string]int{}
 	)
-	m.showRunnerMetrics()
-	for index, msg := range m.blockBuffer {
-		ider := msg.(batchqueue.Identifier)
+	// m.showRunnerMetrics()
+	for index, bm := range m.blockBuffer {
+		if !bm.valid {
+			continue
+		}
+		ider := bm.msg.(batchqueue.Identifier)
 
 		var ready bool
 		references, ready = m.runable(ider, references)
@@ -417,7 +376,7 @@ func (m *Runner) runable(ider batchqueue.Identifier, references map[string]int) 
 		resource := Resource(label.Name)
 		limit, exist := m.ResourceLimits[resource]
 		if !exist {
-			log.INFO.Printf("resource limit: resource[%s] constraint not definition.", resource)
+			// log.DEBUG.Printf("resource limit: resource[%s] constraint not definition.", resource)
 			continue
 		}
 
@@ -480,24 +439,17 @@ func (m *Runner) unmark(once bool, iders ...batchqueue.Identifier) {
 	}
 }
 
-func (m *Runner) wakeEvent(ev WakeEvent) {
-	select {
-	case m.wakeEventChan <- ev:
-	default:
-	}
-}
-
 func (m *Runner) onPostFlushed(iders []batchqueue.Identifier) {
 	if len(iders) > 0 {
-		m.wakeEvent(WakeFlush)
 		m.refFlushChan <- iders
-		m.wakeEvent(WakeFlush)
 	}
 }
 
 func (r *Runner) wrapPreBatchFn(processFn batchqueue.ProcessFn) batchqueue.ProcessFn {
 	return func(msgs []interface{}) ([]batchqueue.Identifier, error) {
+		start := time.Now()
 		iders, err := processFn(msgs)
+		r.metrics.ObservePreBatchDuration(time.Since(start))
 		for _, msg := range msgs {
 			r.msgChan <- msg.(MessageContext)
 		}
@@ -507,7 +459,9 @@ func (r *Runner) wrapPreBatchFn(processFn batchqueue.ProcessFn) batchqueue.Proce
 
 func (r *Runner) wrapPostBatchFn(processFn batchqueue.ProcessFn) batchqueue.ProcessFn {
 	return func(msgs []interface{}) ([]batchqueue.Identifier, error) {
+		start := time.Now()
 		iders, err := processFn(msgs)
+		r.metrics.ObservePostBatchDuration(time.Since(start))
 
 		flushIders := make([]batchqueue.Identifier, 0, len(msgs))
 		for _, msg := range msgs {
@@ -520,24 +474,68 @@ func (r *Runner) wrapPostBatchFn(processFn batchqueue.ProcessFn) batchqueue.Proc
 	}
 }
 
-var testingFeedback = false
-
-func TestingSetup() { testingFeedback = true }
-
 const (
 	// runner configuration default definitions.
-	DefaultRecvSize                  = 8
-	DefaultBlockSize                 = 128
-	DefaultConcurrency               = 128
-	DefaultMsgChanSize               = 128
-	DefaultWakeChanSize              = 128
-	DefaultReferenceSize             = 128
-	DefaultPreMaxBatching            = 100
-	DefaultPostMaxBatching           = 200
-	DefaultPreMaxPendingMessages     = 2
-	DefaultPostMaxPendingMessages    = 5
-	DefaultPreBatchingMaxFlushDelay  = 300 * time.Millisecond
-	DefaultPostBatchingMaxFlushDelay = 800 * time.Millisecond
+
+	// DefaultRecvSize 定义接收消息的缓冲通道大小。
+	// 该通道仅用于解耦外部生产者与 Runner 内部的事件循环，避免写入阻塞。
+	// 由于消息会立即被转移至 blockBuffer，此处无需过大，固定较小值即可。
+	// 影响仅为慢启动阶段达到最大吞吐的速率，对稳态性能无影响。
+	DefaultRecvSize = 8
+
+	// DefaultBlockSize 定义本地阻塞缓冲队列的最大容量。
+	// 该缓冲区用于解决队头阻塞（HOL）问题：当队头消息因资源冲突无法执行时，
+	// Runner 可以向后扫描，挑选就绪消息优先调度，从而提升并发效率。
+	// 容量需根据业务消息的资源冲突密度设定，与 Concurrency 无强制关联。
+	DefaultBlockSize = 256
+
+	// DefaultConcurrency 定义 worker 的最大并发数。
+	// 这是 Runner 的核心性能参数，决定了同时处理消息的最大数量。
+	// 该值应根据实际业务负载、下游依赖（如数据库连接池）的承载能力设定。
+	DefaultConcurrency = 512
+
+	// DefaultMsgChanSize 定义 preBatcher 与 worker 之间的消息通道缓冲大小。
+	// 该通道仅用于解耦批处理回调与 worker 消费，避免批次处理完成后阻塞。
+	// worker 处理消息需要时间，但通道写入极快，固定小值即可满足需求。
+	DefaultMsgChanSize = 16
+
+	// DefaultReferenceSize 定义引用计数刷新通道的缓冲大小。
+	// 用于接收 postBatcher 完成后的标识符，触发资源释放。
+	DefaultReferenceSize = 128
+
+	// DefaultPreMaxBatching 定义 preBatcher 单批次最大消息数。
+	// preBatcher 用于批量执行预处理逻辑（如数据库批操作），
+	// 其作用是补充 worker 的消耗，而非消息的主要处理链路。
+	// 因此采用小批量快速处理策略，减少中间状态积压。
+	DefaultPreMaxBatching = 32
+
+	// DefaultPostMaxBatching 定义 postBatcher 单批次最大消息数。
+	// postBatcher 用于批量执行后置处理逻辑（如状态更新、通知发送）。
+	// 与 preBatcher 类似，采用小批量策略以降低延迟和内存占用。
+	DefaultPostMaxBatching = 64
+
+	// DefaultPreMaxPendingMessages 定义 preBatcher 允许的最大 pending 批次数。
+	// 该值直接控制预处理阶段的并发度，防止对下游依赖（如数据库）造成过大压力。
+	// 保持较小值（如 2）以确保预处理不会成为系统瓶颈。
+	DefaultPreMaxPendingMessages = 2
+
+	// DefaultPostMaxPendingMessages 定义 postBatcher 允许的最大 pending 批次数。
+	// 控制后置处理阶段的并发度，避免资源耗尽。
+	DefaultPostMaxPendingMessages = 2
+
+	// DefaultPreBatchingMaxFlushDelay 定义 preBatcher 的最大刷新延迟。
+	// 即使批次未满，超过该延迟也会强制 flush，确保消息不会长时间等待。
+	// 较小的延迟有助于降低端到端处理时延。
+	DefaultPreBatchingMaxFlushDelay = 100 * time.Millisecond
+
+	// DefaultPostBatchingMaxFlushDelay 定义 postBatcher 的最大刷新延迟。
+	// 控制后置处理的响应速度，避免消息处理完成后长时间未确认。
+	DefaultPostBatchingMaxFlushDelay = 200 * time.Millisecond
+
+	// DefaultScheduleBackoff 定义调度失败后的退避重试间隔。
+	// 当 preBatcher 满或资源不足导致调度失败时，Runner 会在该间隔后重试。
+	// 较小的间隔有助于快速恢复调度，减少消息等待时间。
+	DefaultScheduleBackoff = 10 * time.Millisecond
 )
 
 type MessageContext interface {
@@ -553,17 +551,7 @@ type MessageContext interface {
 	IsRetry() bool
 }
 
-type retryMessage struct {
-	msgCtx   MessageContext
-	previous batchqueue.Identifier
-}
-
 type FlushHandler func(batchqueue.Identifier)
-
-// 定义对失败的消息进行更新处理，返回是否继续更新
-type RetryUpdater func(MessageContext) bool
-
-type HungerFeedbacker func(ctx context.Context, sequence int)
 
 type Processor func(v MessageContext)
 
@@ -572,62 +560,101 @@ type Resource string
 func (res Resource) S() string { return string(res) }
 
 type RunnerConfig struct {
-	// Debug 标识服务是否以调试模式启动
+	// Debug 标识服务是否以调试模式启动。
+	// 开启后会输出详细的调度日志和指标信息，便于排查问题。
 	Debug bool
 
-	// 名称
+	// Name 定义 Runner 实例的名称，用于日志标识和监控区分。
 	Name string
 
-	// 本地缓存队列大小，为解决对头阻塞而设计，默认值128
+	// BlockSize 定义本地阻塞缓冲队列的最大容量。
+	// 该缓冲区是 Runner 的核心组件，用于解决队头阻塞（Head-of-Line Blocking）问题：
+	// 当队头消息因资源冲突（如 UniqueEntryRunning 或 ResourceLimits）无法执行时，
+	// Runner 可以向后扫描 blockBuffer，挑选不冲突的就绪消息优先调度。
+	// 容量需根据业务消息的资源冲突密度设定：
+	//   - 冲突密度低（消息资源独立）：较小值即可（如 64）
+	//   - 冲突密度高（消息争抢相同资源）：较大值（如 256）以提供足够的"跳过"空间
+	// 与 Concurrency 无强制关联，独立配置。
 	BlockSize int
 
+	// RecvSize 定义接收消息的缓冲通道大小。
+	// 该通道仅用于解耦外部生产者（如 MQ Consumer）与 Runner 内部的事件循环。
+	// 消息进入 recvChan 后会立即被转移至 blockBuffer，因此该通道无需过大。
+	// 固定较小值（如 8）即可，影响仅为慢启动阶段达到最大吞吐的速率。
 	RecvSize int
 
-	// 改密节点最大并发，默认值为128
+	// Concurrency 定义 worker 的最大并发数。
+	// 这是 Runner 的核心性能参数，决定了同时处理消息的最大数量。
+	// 该值应根据以下因素综合设定：
+	//   - CPU 核心数（避免过度上下文切换）
+	//   - 下游依赖承载能力（如数据库连接池大小）
+	//   - 消息处理耗时（长耗时任务需要更低并发以避免资源耗尽）
+	// 消息链路中其他节点的容量均围绕此值设计，但 blockBuffer 除外。
 	Concurrency int
 
-	// BatchingMaxMessages set the maximum number of messages permitted in a batch. (default: 100)
+	// PreMaxBatching 定义 preBatcher 单批次最大消息数。
+	// preBatcher 用于批量执行预处理逻辑（如数据库批操作、缓存预热等）。
+	// 其作用是补充 worker 的消耗，而非消息的主要处理链路，因此采用小批量策略：
+	//   - 较小的批次可以降低端到端延迟
+	//   - 快速 flush 有助于减少中间状态积压
+	// 建议值：32 或 64，远小于 Concurrency。
 	PreMaxBatching int
 
-	// MaxPendingMessages set the max size of the queue.
+	// PreMaxPendingMessages 定义 preBatcher 允许的最大 pending 批次数。
+	// 该值直接控制预处理阶段的并发度，防止对下游依赖（如数据库）造成过大压力。
+	// 保持较小值（如 2）以确保预处理不会成为系统瓶颈，同时避免资源耗尽。
 	PreMaxPendingMessages uint
 
-	// BatchingMaxFlushDelay set the time period within which the messages sent will be batched (default: 300ms)
+	// PreBatchingMaxFlushDelay 定义 preBatcher 的最大刷新延迟。
+	// 即使批次未满，超过该延迟也会强制 flush，确保消息不会长时间等待预处理。
+	// 较小的延迟（如 100ms）有助于降低端到端处理时延，但会增加批次数。
 	PreBatchingMaxFlushDelay time.Duration
 
-	// BatchingMaxMessages set the maximum number of messages permitted in a batch. (default: 200)
+	// PostMaxBatching 定义 postBatcher 单批次最大消息数。
+	// postBatcher 用于批量执行后置处理逻辑（如状态更新、结果通知、日志归档等）。
+	// 与 preBatcher 类似，采用小批量策略以降低延迟和内存占用。
+	// 建议值：64 或 128，根据后置处理的开销调整。
 	PostMaxBatching int
 
-	// MaxPendingMessages set the max size of the queue.
+	// PostMaxPendingMessages 定义 postBatcher 允许的最大 pending 批次数。
+	// 控制后置处理阶段的并发度，避免资源耗尽。
+	// 保持较小值（如 2）即可，因为后置处理通常是轻量级操作。
 	PostMaxPendingMessages uint
 
-	// BatchingMaxFlushDelay set the time period within which the messages sent will be batched (default: 800ms)
+	// PostBatchingMaxFlushDelay 定义 postBatcher 的最大刷新延迟。
+	// 控制后置处理的响应速度，避免消息处理完成后长时间未确认。
+	// 建议值略大于 preBatcher（如 200ms），因为后置处理通常在 worker 完成后执行。
 	PostBatchingMaxFlushDelay time.Duration
 
-	// 消息处理过程，默认DefaultProcessFn
+	// ProcessFn 定义消息处理函数，是 Runner 的核心业务逻辑入口。
+	// 该函数在 worker goroutine 中并发执行，执行耗时直接影响整体吞吐量。
+	// 函数执行完成后，消息会自动进入 postBatcher 进行后置处理。
 	ProcessFn Processor
 
-	// ProcessFn执行前，批处理消息回调过程，默认DefaultPreBatchFn
+	// PreBatchFn 定义预处理批处理函数。
+	// 在消息进入 worker 之前执行，用于批量预处理（如数据库查询、权限校验等）。
+	// 该函数在 batcher 的内部 goroutine 中执行，不应阻塞过长时间。
 	PreBatchFn batchqueue.ProcessFn
 
-	// ProcessFn执行后，批处理消息回调过程，默认DefaultPostBatchFn
+	// PostBatchFn 定义后置处理批处理函数。
+	// 在消息处理完成后执行，用于批量后置处理（如状态更新、通知发送等）。
+	// 该函数在 batcher 的内部 goroutine 中执行，不应阻塞过长时间。
 	PostBatchFn batchqueue.ProcessFn
 
-	// 消息处理完成后，需要处理的通知等回调过程，默认DefaultPostFlushFn
+	// OnPostFlushFn 定义后置处理完成后的回调函数。
+	// 当 postBatcher 完成一批消息的后置处理并释放引用计数后触发。
+	// 可用于精确控制 MQ 的 ack 时机，确保消息处理完成后再确认。
 	OnPostFlushFn FlushHandler
 
-	// 消息处理失败后
-	// 对消息进行处理，重置状态等，返回值决定是否重试，默认DefaultRetryUpdateFn
-	RetryUpdateFn RetryUpdater
-
-	// 消费者饥饿反馈回调
-	// 当队列中不能消费出消息时，向生产者（调度器）反馈
-	HungerFeedbacker HungerFeedbacker
-
-	// 同一主体唯一执行约束
+	// UniqueEntryRunning 启用同一主体唯一执行约束。
+	// 当设置为 true 时，具有相同 EntryID 的消息不会同时执行，
+	// 而是排队等待前一个消息处理完成。适用于需要串行执行的业务场景。
 	UniqueEntryRunning bool
 
-	// 资源限制约束
+	// ResourceLimits 定义资源限制约束。
+	// 键为资源名称，值为该资源允许的最大并发数。
+	// Runner 会确保具有相同资源标签的消息不会超过该限制。
+	// 例如：{"db_conn": 10} 表示最多 10 个消息同时使用数据库连接。
 	ResourceLimits map[Resource]int
 }
 
@@ -668,46 +695,34 @@ func (c *RunnerConfig) Default() {
 		c.PostBatchingMaxFlushDelay = DefaultPostBatchingMaxFlushDelay
 	}
 
-	onExeptionFn := func(err error) {
+	onExceptionFn := func(err error) {
 		if err != nil {
-			log.ERROR.Printf("An exception ocurrs in Runner[%s].", c.Name)
+			log.ERROR.Printf("An exception occurs in Runner[%s].", c.Name)
 		}
 	}
 
 	if c.ProcessFn == nil {
 		c.ProcessFn = DefaultProcessFn
 	} else {
-		c.ProcessFn = WrapProcessFn(c.ProcessFn, onExeptionFn)
+		c.ProcessFn = WrapProcessFn(c.ProcessFn, onExceptionFn)
 	}
 
 	if c.PreBatchFn == nil {
 		c.PreBatchFn = DefaultPreBatchFn
 	} else {
-		c.PreBatchFn = WrapBatchProcessFn(c.PreBatchFn, onExeptionFn)
+		c.PreBatchFn = WrapBatchProcessFn(c.PreBatchFn, onExceptionFn)
 	}
 
 	if c.PostBatchFn == nil {
 		c.PostBatchFn = DefaultPostBatchFn
 	} else {
-		c.PostBatchFn = WrapBatchProcessFn(c.PostBatchFn, onExeptionFn)
+		c.PostBatchFn = WrapBatchProcessFn(c.PostBatchFn, onExceptionFn)
 	}
 
 	if c.OnPostFlushFn == nil {
 		c.OnPostFlushFn = DefaultPostFlushFn
 	} else {
-		c.OnPostFlushFn = WrapFlushHandleFn(c.OnPostFlushFn, onExeptionFn)
-	}
-
-	if c.RetryUpdateFn == nil {
-		c.RetryUpdateFn = DefaultRetryUpdateFn
-	} else {
-		c.RetryUpdateFn = WrapRetryUpdateFn(c.RetryUpdateFn, onExeptionFn)
-	}
-
-	if c.HungerFeedbacker == nil {
-		c.HungerFeedbacker = DefaultHungerFeedbackerFn
-	} else {
-		c.HungerFeedbacker = WrapHungerFeedbackerFn(c.HungerFeedbacker, onExeptionFn)
+		c.OnPostFlushFn = WrapFlushHandleFn(c.OnPostFlushFn, onExceptionFn)
 	}
 
 	if c.ResourceLimits == nil {
@@ -736,102 +751,73 @@ func DefaultPostBatchFn(msgs []interface{}) ([]batchqueue.Identifier, error) {
 
 func DefaultPostFlushFn(batchqueue.Identifier) {}
 
-func DefaultRetryUpdateFn(MessageContext) bool { return false }
+type panicHandler struct {
+	onError func(err error)
+}
 
-func DefaultHungerFeedbackerFn(context.Context, int) {}
+func newPanicHandler(onError func(err error)) *panicHandler {
+	return &panicHandler{onError: onError}
+}
+
+func (p *panicHandler) handle(name string) {
+	if r := recover(); r != nil {
+		log.ERROR.Printf("panic in %s: %v", name, r)
+		if p.onError != nil {
+			p.onError(fmt.Errorf("%v", r))
+		}
+	}
+}
 
 func WrapProcessFn(processor Processor, fn func(err error)) Processor {
+	ph := newPanicHandler(fn)
 	return func(msgCtx MessageContext) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.ERROR.Printf("panic in process: %v", r)
-				if fn != nil {
-					fn(fmt.Errorf("%v", r))
-				}
-			}
-		}()
+		defer ph.handle("process")
 		processor(msgCtx)
 	}
 }
 
 func WrapBatchProcessFn(processor batchqueue.ProcessFn, fn func(err error)) batchqueue.ProcessFn {
+	ph := newPanicHandler(fn)
 	return func(msgs []interface{}) ([]batchqueue.Identifier, error) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.ERROR.Printf("panic in batch process: %v", r)
-				if fn != nil {
-					fn(fmt.Errorf("%v", r))
-				}
-			}
-		}()
+		defer ph.handle("batch process")
 		return processor(msgs)
 	}
 }
 
 func WrapFlushHandleFn(flushHandler FlushHandler, fn func(err error)) FlushHandler {
+	ph := newPanicHandler(fn)
 	return func(i batchqueue.Identifier) {
-		defer func() {
-			if r := recover(); r != nil {
-				log.ERROR.Printf("panic in flush handler: %v", r)
-				if fn != nil {
-					fn(fmt.Errorf("%v", r))
-				}
-			}
-		}()
+		defer ph.handle("flush handler")
 		flushHandler(i)
 	}
 }
 
-func WrapRetryUpdateFn(flushHandler RetryUpdater, fn func(err error)) RetryUpdater {
-	return func(msgCtx MessageContext) bool {
-		defer func() {
-			if r := recover(); r != nil {
-				log.ERROR.Printf("panic in retry update: %v", r)
-				if fn != nil {
-					fn(fmt.Errorf("%v", r))
-				}
-			}
-		}()
-		return flushHandler(msgCtx)
+type RunnerMetrics struct {
+	BlockBufferSize  int
+	RecvChanSize     int
+	RefFlushChanSize int
+	ReferencesCount  int
+	PendingCompact   int
+	PreBatcherSize   int64
+	PostBatcherSize  int64
+}
+
+func (m *Runner) Metrics() RunnerMetrics {
+	return RunnerMetrics{
+		BlockBufferSize:  len(m.blockBuffer),
+		RecvChanSize:     len(m.recvChan),
+		RefFlushChanSize: len(m.refFlushChan),
+		ReferencesCount:  len(m.references),
+		PendingCompact:   m.pendingCompact,
+		PreBatcherSize:   m.preBatcher.Size(),
+		PostBatcherSize:  m.postBatcher.Size(),
 	}
 }
-
-func WrapHungerFeedbackerFn(feedbacker HungerFeedbacker, fn func(err error)) HungerFeedbacker {
-	return func(ctx context.Context, sequence int) {
-		if testingFeedback {
-			ctx = context.WithValue(ctx, "testing", struct{}{})
-		}
-		defer func() {
-			if r := recover(); r != nil {
-				log.ERROR.Printf("panic in feedbacker: %v", r)
-				if fn != nil {
-					fn(fmt.Errorf("%v", r))
-				}
-			}
-		}()
-		feedbacker(ctx, sequence)
-	}
-}
-
-type WakeEvent string
-
-func (e WakeEvent) String() string {
-	return string(e)
-}
-
-const (
-	WakeAll   WakeEvent = "ALL"
-	WakeFlush WakeEvent = "FLUSH"
-	WakeRetry WakeEvent = "RETRY"
-)
 
 func (m *Runner) showRunnerMetrics() {
-	// m.logger.Info("================= Show runner metrics =================")
-	// m.logger.Infof("block buffer size: %d", len(m.blockBuffer))
-	// m.logger.Infof("recv channel size: %d", len(m.recvChan))
-	// m.logger.Infof("flush channel size: %d", len(m.refFlushChan))
-	// m.logger.Infof("retry channel size: %d", len(m.retryChan))
-	// m.logger.Infof("wake channel size: %d", len(m.wakeEventChan))
-	// m.logger.Infof("show references: %+v", m.references)
-	// m.logger.Infof("show runner config: %+v", m.RunnerConfig)
+	// if !m.Debug {
+	// 	return
+	// }
+	m.metrics.updateAllGauges(m)
+	log.INFO.Printf("runner[%s] metrics: %s", m.Name, m.metrics.String(m))
 }

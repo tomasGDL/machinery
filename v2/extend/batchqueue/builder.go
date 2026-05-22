@@ -67,30 +67,22 @@ func (bb *BatchBuilder) Add(payload interface{}) (isFull bool) {
 
 func (bb *BatchBuilder) reset() {
 	bb.numMessages = 0
-	bb.buffer = nil
+	bb.buffer = bb.buffer[:0]
 }
 
 // Flush all the messages buffered in the client and wait until all messages have been successfully persisted.
 func (bb *BatchBuilder) Flush() (batchData []interface{}, sequenceID uint64) {
+	bb.lock.Lock()
+	defer bb.lock.Unlock()
+
 	if bb.numMessages == 0 {
 		// No-Op for empty batch
 		return nil, bb.sequenceID
 	}
-	bb.lock.Lock()
-	defer bb.lock.Unlock()
-	bb.sequenceID = GetAndAdd(bb.sequenceIDGenerator, 1)
+
+	bb.sequenceID = atomic.AddUint64(bb.sequenceIDGenerator, 1)
 	slice := bb.buffer
 	bb.reset()
 
 	return slice, bb.sequenceID
-}
-
-// GetAndAdd perform atomic read and update.
-func GetAndAdd(n *uint64, diff uint64) uint64 {
-	for {
-		v := *n
-		if atomic.CompareAndSwapUint64(n, v, v+diff) {
-			return v
-		}
-	}
 }
